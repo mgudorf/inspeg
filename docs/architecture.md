@@ -149,6 +149,8 @@ All permissive open source. Verify licenses at pin time — they change.
 
 **Single process, single port.** The daemon owns the database. Adapters are dumb clients that speak one JSON endpoint. This is why capture doesn't die when the dashboard is closed, and why the dashboard can post structured captures *directly* rather than round-tripping through the clipboard.
 
+One process per data directory is enforced by an OS lock on `<data-dir>/.lock`: two daemons sharing a data dir race the projection and the blobstore. The port is loopback-only and unauthenticated, which makes the *browser* the threat model — every page the user visits can reach it — so the API enforces same-origin and a loopback `Host` allowlist. See [security.md](security.md).
+
 ## 6. Data model
 
 Sketch, not final. SQL because SQLite is the format of record.
@@ -166,7 +168,8 @@ CREATE TABLE artifact (
   source_uri    TEXT,               -- URL if known
   source_app    TEXT,               -- exe / window title if known
   derived_from  TEXT REFERENCES artifact(id),  -- transcript_of, ocr_of
-  derivation    TEXT                -- null for originals
+  derivation    TEXT,               -- null for originals
+  redacted      INTEGER NOT NULL DEFAULT 0     -- content destroyed; ADR 0002
 );
 
 CREATE TABLE anchor (
@@ -178,6 +181,8 @@ CREATE TABLE anchor (
 ```
 
 Blobs live on disk under `blobs/<first-two-hex>/<sha256>`, never in the database. Deduplication is automatic and free.
+
+Blobs are immutable with exactly one exception: **redaction** ([ADR 0002](adr/0002-redaction.md)) destroys an artifact's content — for the password you copied by accident — while keeping its provenance skeleton, by appending an `artifact_redacted` event rather than rewriting the log.
 
 ### 6.2 Event log
 

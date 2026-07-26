@@ -10,9 +10,15 @@ proposing structural changes.
 python -m venv .venv
 .venv\Scripts\activate          # or: source .venv/bin/activate
 pip install -e ".[dev]"
+pre-commit install              # one-time: installs the git pre-commit hooks
 pytest
 ruff check . && ruff format --check .
 ```
+
+The pre-commit hooks run gitleaks (blocks commits containing API keys,
+tokens, private keys, or other credentials — see `.gitleaks.toml`), a few
+hygiene checks, and the same Ruff lint/format that CI enforces. CI also
+scans the full git history for secrets on every push and PR.
 
 Windows-only pieces (hotkey, clipboard) are import-guarded; the test suite
 must pass on any platform.

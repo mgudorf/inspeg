@@ -42,11 +42,17 @@ def parse_hotkey(spec: str) -> tuple[int, int]:
 
 
 class HotkeyListener(threading.Thread):
+    """Daemon thread: dies with the process, so a closed terminal never
+    leaves a hotkey registration behind. ``status`` is surfaced through
+    ``/api/health`` — a hotkey that failed to register or died must be
+    visible, not silent."""
+
     def __init__(self, spec: str, callback: Callable[[], None]) -> None:
         super().__init__(name="inspeg-hotkey", daemon=True)
         self.spec = spec
         self.mods, self.vk = parse_hotkey(spec)  # fail fast, before the thread starts
         self.callback = callback
+        self.status = "pending"  # -> registered | failed | stopped
         self._tid: int | None = None
 
     def run(self) -> None:
@@ -56,11 +62,19 @@ class HotkeyListener(threading.Thread):
         user32 = ctypes.windll.user32
         self._tid = ctypes.windll.kernel32.GetCurrentThreadId()
         if not user32.RegisterHotKey(None, _HOTKEY_ID, self.mods | _MOD_NOREPEAT, self.vk):
+            self.status = "failed"
             log.error("could not register hotkey %r (already in use by another app?)", self.spec)
             return
+        self.status = "registered"
         try:
             msg = wintypes.MSG()
-            while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+            while True:
+                ret = user32.GetMessageW(ctypes.byref(msg), None, 0, 0)
+                if ret == 0:  # WM_QUIT
+                    break
+                if ret == -1:  # error — without this check the loop dies silently
+                    log.error("hotkey message loop failed (GetMessageW returned -1)")
+                    break
                 if msg.message == _WM_HOTKEY:
                     try:
                         self.callback()
@@ -68,6 +82,7 @@ class HotkeyListener(threading.Thread):
                         log.exception("hotkey callback failed")
         finally:
             user32.UnregisterHotKey(None, _HOTKEY_ID)
+            self.status = "stopped"
 
     def stop(self) -> None:
         if self._tid is not None:

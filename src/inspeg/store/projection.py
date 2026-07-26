@@ -48,6 +48,13 @@ def _apply_artifact_added(conn: sqlite3.Connection, p: dict) -> None:
     )
 
 
+def _apply_artifact_redacted(conn: sqlite3.Connection, p: dict) -> None:
+    # The blob file itself is deleted by the service (once, when the event is
+    # first recorded); the projection only tracks the flag so replay stays
+    # a pure DB operation.
+    conn.execute("UPDATE artifact SET redacted = 1 WHERE id = ?", (p["id"],))
+
+
 def _apply_anchor_added(conn: sqlite3.Connection, p: dict) -> None:
     conn.execute(
         "INSERT OR IGNORE INTO anchor (id, artifact_id, selector_type, selector)"
@@ -93,6 +100,7 @@ def _apply_support_added(conn: sqlite3.Connection, p: dict) -> None:
 
 _APPLIERS: dict[str, Callable[[sqlite3.Connection, dict], None]] = {
     ev.ARTIFACT_ADDED: _apply_artifact_added,
+    ev.ARTIFACT_REDACTED: _apply_artifact_redacted,
     ev.ANCHOR_ADDED: _apply_anchor_added,
     ev.NODE_ASSERTED: _apply_node_asserted,
     ev.EDGE_ASSERTED: _apply_edge_asserted,

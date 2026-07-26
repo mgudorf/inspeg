@@ -49,20 +49,22 @@ async function loadAnchor() {
   tier.textContent = TIER_LABELS[art.provenance] || art.provenance;
   tier.dataset.tier = art.provenance;
 
-  if (art.source_uri) {
+  // Only source_link (scheme-validated server-side) may become an href;
+  // source_uri is attacker-controllable clipboard data (javascript:, data:).
+  if (art.source_link) {
     const link = $("source");
-    link.href = art.source_uri;
-    link.title = art.source_uri;
+    link.href = art.source_link;
+    link.title = art.source_link;
     try {
-      link.textContent = new URL(art.source_uri).hostname;
+      link.textContent = new URL(art.source_link).hostname;
     } catch {
-      link.textContent = art.source_uri;
+      link.textContent = art.source_link;
     }
     link.classList.remove("hidden");
   }
   if (art.source_app) $("app").textContent = art.source_app;
   $("when").textContent = new Date(art.captured_at).toLocaleString();
-  $("excerpt").textContent = detail.excerpt || "(no text)";
+  $("excerpt").textContent = art.redacted ? "(redacted)" : detail.excerpt || "(no text)";
 
   $("capture").classList.remove("hidden");
   $("assert").classList.remove("hidden");

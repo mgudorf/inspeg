@@ -1,0 +1,13 @@
+# Secret-scanning config, shared by the pre-commit hook and the CI job.
+# Extends gitleaks' built-in ruleset (AWS/GCP/Azure keys, GitHub/Slack/OpenAI
+# tokens, generic api-key heuristics, private keys, JWTs, ...).
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Local-only directories that must never be scanned or committed"
+paths = [
+  '''(^|/)\.venv/''',
+  '''(^|/)blobs/''',
+  '''(^|/)\.inspeg/''',
+]

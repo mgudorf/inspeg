@@ -29,32 +29,37 @@ def read_clipboard_snapshot() -> ClipboardSnapshot:
 
     cf_html_format = wc.RegisterClipboardFormat("HTML Format")
 
+    last_error: Exception | None = None
     for attempt in range(5):
+        if attempt:
+            time.sleep(0.05)
         try:
             wc.OpenClipboard()
-            break
-        except Exception:  # pywintypes.error: clipboard held by another process
-            if attempt == 4:
-                raise ClipboardBusyError("could not open the clipboard") from None
-            time.sleep(0.05)
-    try:
-        cf_html = (
-            wc.GetClipboardData(cf_html_format)
-            if wc.IsClipboardFormatAvailable(cf_html_format)
-            else None
-        )
-        text = (
-            wc.GetClipboardData(wc.CF_UNICODETEXT)
-            if wc.IsClipboardFormatAvailable(wc.CF_UNICODETEXT)
-            else None
-        )
-    finally:
-        wc.CloseClipboard()
+        except Exception as exc:  # pywintypes.error: clipboard held by another process
+            last_error = exc
+            continue
+        # The clipboard is now held system-wide: everything below runs under
+        # the finally that releases it, so an interrupt cannot leave every
+        # other application locked out of the clipboard.
+        try:
+            cf_html = (
+                wc.GetClipboardData(cf_html_format)
+                if wc.IsClipboardFormatAvailable(cf_html_format)
+                else None
+            )
+            text = (
+                wc.GetClipboardData(wc.CF_UNICODETEXT)
+                if wc.IsClipboardFormatAvailable(wc.CF_UNICODETEXT)
+                else None
+            )
+        finally:
+            wc.CloseClipboard()
 
-    if isinstance(cf_html, str):  # pywin32 may hand back str for some producers
-        cf_html = cf_html.encode("utf-8")
+        if isinstance(cf_html, str):  # pywin32 may hand back str for some producers
+            cf_html = cf_html.encode("utf-8")
+        return ClipboardSnapshot(cf_html=cf_html, text=text, source_app=foreground_app())
 
-    return ClipboardSnapshot(cf_html=cf_html, text=text, source_app=foreground_app())
+    raise ClipboardBusyError("could not open the clipboard") from last_error
 
 
 def foreground_app() -> str | None:

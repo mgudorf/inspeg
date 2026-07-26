@@ -11,6 +11,7 @@ the plan of record.
 ```
 .venv\Scripts\activate                 # Windows venv
 pip install -e ".[dev]"
+pre-commit install                     # gitleaks secret scanning + ruff
 pytest                                 # full suite, cross-platform
 ruff check . && ruff format --check .  # CI runs both
 python -m inspeg                       # run the daemon (UI at 127.0.0.1:8137)
@@ -35,6 +36,14 @@ python -m inspeg --no-hotkey           # API/UI only, works on any platform
 6. **Schema changes = new numbered file in `schema/`**, never an edit to an
    applied migration. Migrations are tracked by filename in
    `schema_migration`.
+7. **The browser is the threat model.** The API is loopback-only and
+   unauthenticated, so any page the user visits can reach it. Same-origin
+   enforcement, the loopback `Host` allowlist, and the `X-Inspeg-Capture`
+   header are load-bearing — never relax one without reading
+   `docs/security.md`, and every control there has a test that fails if it is
+   removed.
+8. **Redaction is the only exception to blob immutability** (ADR 0002), and
+   it is an *appended* `artifact_redacted` event, never a log rewrite.
 
 ## Layout
 
@@ -50,6 +59,9 @@ python -m inspeg --no-hotkey           # API/UI only, works on any platform
 - `schema/`, `ui/` — repo-root dirs resolved by `util.resource_dir` (bundled
   into the wheel via hatch force-include).
 - `tests/` — must pass on any OS; win32 code paths are never imported there.
+  `test_security.py` holds one regression test per vector in
+  `docs/security.md`; the shared `client` fixture uses a loopback base URL
+  because the API rejects TestClient's default `testserver` Host.
 
 ## Conventions
 

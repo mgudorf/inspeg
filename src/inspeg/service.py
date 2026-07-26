@@ -7,7 +7,9 @@ second), so the log stays the complete database of record.
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass, field
+from urllib.parse import urlsplit
 
 from bs4 import BeautifulSoup
 
@@ -19,14 +21,31 @@ from inspeg.store import events as ev
 from inspeg.util import canonical_json, new_id, utcnow_iso
 
 EXCERPT_LIMIT = 500
+# Excerpts come from at most this much raw HTML: parsing an entire pasted
+# document to show 500 characters is how a big copy hangs the daemon.
+EXCERPT_HTML_SLICE = 64 * 1024
+# One clipboard snapshot may not exceed this many bytes/chars per format.
+# Clipboard text beyond this is almost certainly a mistake, and every byte is
+# decoded, parsed, hashed, and stored — the cap bounds memory and disk.
+MAX_CAPTURE_BYTES = 16 * 1024 * 1024
+
+_BLOB_RELPATH = re.compile(r"blobs/[0-9a-f]{2}/[0-9a-f]{64}")
 
 
 class EmptyCaptureError(ValueError):
     """Nothing usable was on the clipboard."""
 
 
+class CaptureTooLargeError(ValueError):
+    """The clipboard payload exceeds MAX_CAPTURE_BYTES."""
+
+
 class UnknownAnchorError(KeyError):
     """The referenced anchor does not exist."""
+
+
+class UnknownArtifactError(KeyError):
+    """The referenced artifact does not exist."""
 
 
 @dataclass(frozen=True)
@@ -45,6 +64,22 @@ def html_to_text(html: str) -> str:
     return BeautifulSoup(html, "html.parser").get_text(" ", strip=True)
 
 
+def safe_url(url: str | None) -> str | None:
+    """Return ``url`` only if it is safe to render as a hyperlink.
+
+    CF_HTML ``SourceURL`` is attacker-controllable (any app can write the
+    clipboard), so schemes like ``javascript:`` or ``data:`` must never reach
+    an ``href``. The raw value stays in ``artifact.source_uri`` as provenance.
+    """
+    if not url:
+        return None
+    try:
+        scheme = urlsplit(url).scheme.lower()
+    except ValueError:
+        return None
+    return url if scheme in ("http", "https") else None
+
+
 def _anchor_id(artifact_id: str, selector: dict) -> str:
     """Deterministic anchor id: re-capturing the same span is idempotent."""
     digest = hashlib.sha256(f"{artifact_id}:{canonical_json(selector)}".encode()).hexdigest()
@@ -55,6 +90,10 @@ def ingest_clipboard(store: Store, snap: ClipboardSnapshot) -> Capture:
     """One clipboard snapshot -> artifact(s) + one anchor over the copied span."""
     if not snap.cf_html and not (snap.text or "").strip():
         raise EmptyCaptureError("clipboard has neither HTML nor text")
+    if len(snap.cf_html or b"") > MAX_CAPTURE_BYTES or len(snap.text or "") > MAX_CAPTURE_BYTES:
+        raise CaptureTooLargeError(
+            f"clipboard payload exceeds the {MAX_CAPTURE_BYTES // (1024 * 1024)} MiB capture limit"
+        )
     captured_at = utcnow_iso()
     capture_id = new_id("cap")  # groups sibling artifacts in the event log
     with store.tx():
@@ -115,7 +154,7 @@ def _ingest_html(
         source_url=cf.source_url,
         source_app=snap.source_app,
         captured_at=captured_at,
-        excerpt=html_to_text(cf.fragment)[:EXCERPT_LIMIT],
+        excerpt=html_to_text(cf.fragment[:EXCERPT_HTML_SLICE])[:EXCERPT_LIMIT],
     )
 
 
@@ -194,6 +233,26 @@ def _add_anchor(
         },
     )
     return anchor_id
+
+
+def redact_artifact(store: Store, artifact_id: str, *, actor: str = "human") -> None:
+    """Destroy an artifact's content while keeping its provenance skeleton.
+
+    The one sanctioned exception to blob immutability, for captures that never
+    should have happened (a copied password, private correspondence). Records
+    an ``artifact_redacted`` event — the log stays append-only and replay
+    reproduces the flag — then deletes the blob file. Idempotent.
+    """
+    row = store.query_one("SELECT id, path, redacted FROM artifact WHERE id = ?", (artifact_id,))
+    if row is None:
+        raise UnknownArtifactError(artifact_id)
+    if not row["redacted"]:
+        with store.tx():
+            store.record(ev.ARTIFACT_REDACTED, {"id": artifact_id}, actor)
+    # After the event is durable: delete the file, but only a path shaped like
+    # ours — the DB value names a file we are about to unlink.
+    if _BLOB_RELPATH.fullmatch(row["path"]):
+        (store.data_dir / row["path"]).unlink(missing_ok=True)
 
 
 def _normalize_label(label: str) -> str:

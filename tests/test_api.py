@@ -1,15 +1,8 @@
 import pytest
-from fastapi.testclient import TestClient
 
 from helpers import build_cf_html
 from inspeg import service
 from inspeg.adapters.clipboard import ClipboardSnapshot
-from inspeg.api.app import create_app
-
-
-@pytest.fixture
-def client(store):
-    return TestClient(create_app(store))
 
 
 @pytest.fixture

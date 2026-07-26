@@ -14,6 +14,7 @@ from inspeg.util import utcnow_iso
 
 # Event kinds understood by the projection (M0 subset).
 ARTIFACT_ADDED = "artifact_added"
+ARTIFACT_REDACTED = "artifact_redacted"
 ANCHOR_ADDED = "anchor_added"
 NODE_ASSERTED = "node_asserted"
 EDGE_ASSERTED = "edge_asserted"

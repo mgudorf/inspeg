@@ -25,10 +25,10 @@ inspeg
 ```
 
 1. The daemon starts on `http://127.0.0.1:8137` and registers the global
-   hotkey **Ctrl+Alt+A** (Windows).
+   hotkey **Win+Shift+A** (Windows).
 2. Copy something in any app — a paragraph from your browser, a line from an
    editor.
-3. Press **Ctrl+Alt+A**. The quick-capture window opens showing what you
+3. Press **Win+Shift+A**. The quick-capture window opens showing what you
    captured, its provenance tier, and the source URL when the clipboard
    carried one.
 4. Type a triple — `SQLite` —`has_license`→ `Public Domain` — and hit
@@ -38,6 +38,14 @@ inspeg
 Everything is stored under `~/.inspeg/`: an append-only event log plus
 projection in `inspeg.db`, and content-addressed blobs under `blobs/`. Any
 language, any decade, no API required.
+
+Captured something you shouldn't have? `POST /api/artifacts/<sha256>/redact`
+destroys the content and keeps the provenance record
+([ADR 0002](docs/adr/0002-redaction.md)).
+
+The default hotkey is **Win+Shift+A** rather than Ctrl+Alt+A because Windows
+synthesizes AltGr as Ctrl+Alt — a Ctrl+Alt hotkey fires while people on
+non-US keyboard layouts are typing. Override with `--hotkey`.
 
 ## Provenance tiers
 
@@ -76,9 +84,24 @@ src/inspeg/
 └── service.py  # ingestion + assertions (the only writers)
 schema/         # numbered .sql migrations
 ui/             # quick-capture window (vanilla JS)
-docs/           # architecture, data model, provenance, ADRs
+docs/           # architecture, data model, provenance, security, ADRs
 tests/
 ```
+
+## Security
+
+The daemon is loopback-only and unauthenticated, which means the browser is
+the threat: any page you visit can reach `127.0.0.1:8137`. inspeg enforces
+same-origin and a loopback `Host` allowlist to close CSRF and DNS-rebinding
+attacks, and refuses to bind a non-loopback interface without an explicit
+`--allow-remote`.
+
+- [SECURITY.md](SECURITY.md) — the threat model, and what is *not* defended.
+- [docs/security.md](docs/security.md) — every patched vector, its control,
+  and the test that fails if the control is removed.
+
+Secrets are kept out of the repository by a gitleaks pre-commit hook and a CI
+job that scans the full history; run `pre-commit install` after cloning.
 
 ## Roadmap
 
