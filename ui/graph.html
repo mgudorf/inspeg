@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>inspeg &middot; graph</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <h1>inspeg</h1>
+      <nav>
+        <a href="/">capture</a>
+        <a href="/graph.html" class="active">graph</a>
+      </nav>
+    </div>
+    <div id="stats" class="stats"></div>
+  </header>
+  <main class="wide">
+    <form id="edge-form" class="card">
+      <div class="triple">
+        <input id="src" placeholder="subject" list="entity-list" autocomplete="off" required>
+        <input id="type" class="predicate" placeholder="predicate" list="type-list"
+               autocomplete="off" required>
+        <input id="dst" placeholder="object" list="entity-list" autocomplete="off" required>
+      </div>
+      <input id="note" placeholder="context note (optional)" autocomplete="off">
+      <div class="row">
+        <button type="submit" id="save">Add edge</button>
+        <button type="button" id="cancel" class="ghost hidden">Cancel</button>
+        <span id="flash" class="flash"></span>
+        <span class="dim spacer">Manual entries have no evidence anchor — the Evidence column
+          stays 0. Capture first when you can.</span>
+      </div>
+      <datalist id="entity-list"></datalist>
+      <datalist id="type-list"></datalist>
+    </form>
+
+    <section class="card">
+      <table id="edges">
+        <thead>
+          <tr>
+            <th data-sort="src" class="sortable">Subject</th>
+            <th data-sort="type" class="sortable">Predicate</th>
+            <th data-sort="dst" class="sortable">Object</th>
+            <th>Note</th>
+            <th class="num">Evidence</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <p id="none" class="dim hidden">No edges yet.</p>
+    </section>
+  </main>
+  <script src="common.js"></script>
+  <script src="graph.js"></script>
+</body>
+</html>

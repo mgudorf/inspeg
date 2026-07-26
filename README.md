@@ -31,9 +31,16 @@ inspeg
 3. Press **Ctrl+Shift+Alt+I**. The quick-capture window opens showing what you
    captured, its provenance tier, and the source URL when the clipboard
    carried one.
-4. Type a triple — `SQLite` —`has_license`→ `Public Domain` — and hit
+4. Type a triple — `SQLite` —`HAS_LICENSE`→ `Public Domain` — and hit
    **Assert edge**. The edge lands in the graph with the captured span as
-   evidence.
+   evidence. Predicates are a controlled ALL_CAPS vocabulary
+   ([ADR 0003](docs/adr/0003-predicate-vocabulary.md)): a new one takes one
+   extra confirmation click, an existing one autocompletes.
+5. Open the **graph** tab to browse every edge in a table — sortable by
+   subject, predicate, or object — and add, edit, or delete entries manually.
+   Manual entries carry no evidence anchor and show `0` in the Evidence
+   column; deletions and edits are retraction events in the log, so history
+   is never rewritten.
 
 Everything is stored under `~/.inspeg/`: an append-only event log plus
 projection in `inspeg.db`, and content-addressed blobs under `blobs/`. Any
@@ -58,7 +65,7 @@ Every artifact records how well it can be traced back:
 |---|---|---|---|
 | 1 | `exact` | URL + char offsets + content hash | browser extension (M1) |
 | 2 | `sourced` | `SourceURL` from CF_HTML + fragment HTML | clipboard from a browser |
-| 3 | `attributed` | app name + window title + timestamp | clipboard from anywhere else |
+| 3 | `attributed` | app name + window title + timestamp | clipboard from anywhere else (text only — app-local HTML styling is dropped) |
 | 4 | `orphan` | blob + timestamp only | bare text, unknown origin |
 
 ## Development

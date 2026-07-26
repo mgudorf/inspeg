@@ -40,27 +40,51 @@ def test_latest_anchor_returns_most_recent(client, capture):
 
 
 def test_assert_edge_flow(client, capture, store):
+    body = {
+        "anchor_id": capture.anchor_id,
+        "src_label": "SQLite",
+        "edge_type": "has license",
+        "dst_label": "Public Domain",
+        "note": None,
+    }
+    # Predicates are a controlled vocabulary: the first attempt is refused...
+    refused = client.post("/api/edges", json=body)
+    assert refused.status_code == 422
+    assert refused.json()["detail"].startswith("unknown predicate")
+
+    # ...creating the predicate is the deliberate extra step...
+    created = client.post("/api/predicates", json={"label": "has license"})
+    assert created.status_code == 200
+    assert created.json()["label"] == "HAS_LICENSE"
+
+    # ...after which the assertion lands, with the label normalized.
+    response = client.post("/api/edges", json=body)
+    assert response.status_code == 200, response.text
+    edge = response.json()
+    assert edge["src"]["label"] == "SQLite"
+    assert edge["type"]["label"] == "HAS_LICENSE"
+
+    stats = client.get("/api/stats").json()
+    assert stats["edge"] == 1
+    assert stats["node"] == 3  # SQLite, Public Domain, HAS_LICENSE (types are nodes)
+
+    support = store.query_one("SELECT * FROM support WHERE subject_id = ?", (edge["id"],))
+    assert support["anchor_id"] == capture.anchor_id
+
+
+def test_create_predicate_inline_with_flag(client, capture):
     response = client.post(
         "/api/edges",
         json={
             "anchor_id": capture.anchor_id,
-            "src_label": "SQLite",
-            "edge_type": "has_license",
-            "dst_label": "Public Domain",
-            "note": None,
+            "src_label": "A",
+            "edge_type": "part of",
+            "dst_label": "B",
+            "create_predicate": True,
         },
     )
     assert response.status_code == 200, response.text
-    edge = response.json()
-    assert edge["src"]["label"] == "SQLite"
-    assert edge["type"]["label"] == "has_license"
-
-    stats = client.get("/api/stats").json()
-    assert stats["edge"] == 1
-    assert stats["node"] == 3  # SQLite, Public Domain, has_license (types are nodes)
-
-    support = store.query_one("SELECT * FROM support WHERE subject_id = ?", (edge["id"],))
-    assert support["anchor_id"] == capture.anchor_id
+    assert response.json()["type"]["label"] == "PART_OF"
 
 
 def test_assert_edge_unknown_anchor_404(client):
@@ -87,12 +111,13 @@ def test_node_search_separates_entities_from_edge_types(client, capture):
             "src_label": "SQLite",
             "edge_type": "has_license",
             "dst_label": "Public Domain",
+            "create_predicate": True,
         },
     )
     entities = client.get("/api/nodes", params={"q": "s"}).json()
     assert [n["label"] for n in entities] == ["SQLite"]
     types = client.get("/api/nodes", params={"q": "has", "kind": "edge_type"}).json()
-    assert [n["label"] for n in types] == ["has_license"]
+    assert [n["label"] for n in types] == ["HAS_LICENSE"]
 
 
 def test_ui_is_served_at_root(client):

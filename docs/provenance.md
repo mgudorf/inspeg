@@ -23,7 +23,12 @@ Its description header is parsed by `inspeg.adapters.cfhtml`:
   `StartFragment`/`EndFragment` span inside the stored HTML artifact.
 - **No `SourceURL`** (copied from Word, an IDE, etc.) → tier 3
   (`attributed`): the foreground process image name and window title at
-  capture time are recorded in `artifact.source_app`.
+  capture time are recorded in `artifact.source_app` — **and only the text is
+  stored**. App-local CF_HTML is styling markup around the text
+  (`<div style="color:#a5d6ff;font-family:Consolas">…`), worthless as
+  evidence once there is no URL to trace it to; keeping it would just bloat
+  every editor copy. The plain-text sibling becomes the artifact; if the app
+  put no plain text on the clipboard, the fragment is stripped of tags first.
 - **Plain text only, foreground app known** → tier 3.
 - **Plain text only, nothing else known** → tier 4 (`orphan`).
 
@@ -36,9 +41,10 @@ buys, and it cannot be retrofitted onto clipboard data.
 - CF_HTML header offsets are byte offsets into the UTF-8 payload; anchors
   store character offsets into the decoded artifact text. The conversion
   happens once, at parse time.
-- One copy often yields HTML and plain text simultaneously. Both are stored
-  as sibling artifacts (same `capture_id` in the event log, same tier); the
-  anchor points at the HTML artifact, which is the richer evidence.
+- For tier-2 (browser) captures, one copy often yields HTML and plain text
+  simultaneously. Both are stored as sibling artifacts (same `capture_id` in
+  the event log, same tier); the anchor points at the HTML artifact, which is
+  the richer evidence — `href`s intact, exact fragment span.
 - The content hash (= artifact id) is the rot detector: when a source page
   changes, re-located quotes can be checked against the stored document
   rather than trusted blindly.

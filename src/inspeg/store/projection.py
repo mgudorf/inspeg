@@ -15,6 +15,7 @@ import sqlite3
 from collections.abc import Callable
 
 from inspeg.store import events as ev
+from inspeg.util import normalize_predicate_label
 
 
 def _pick(payload: dict, keys: tuple[str, ...]) -> dict:
@@ -64,13 +65,19 @@ def _apply_anchor_added(conn: sqlite3.Connection, p: dict) -> None:
 
 
 def _apply_node_asserted(conn: sqlite3.Connection, p: dict) -> None:
+    props = p.get("props") or {}
+    label = p["label"]
+    if props.get("kind") == "edge_type":
+        # Predicates became an ALL_CAPS controlled vocabulary (ADR 0003);
+        # normalizing at apply time re-projects pre-vocabulary events too.
+        label = normalize_predicate_label(label)
     conn.execute(
         "INSERT OR IGNORE INTO node (id, label, props) VALUES (?, ?, ?)",
-        (p["id"], p["label"], json.dumps(p.get("props") or {}, sort_keys=True)),
+        (p["id"], label, json.dumps(props, sort_keys=True)),
     )
     conn.execute(
         "INSERT OR IGNORE INTO node_alias (node_id, surface) VALUES (?, ?)",
-        (p["id"], p["label"]),
+        (p["id"], label),
     )
 
 
@@ -81,13 +88,20 @@ def _apply_edge_asserted(conn: sqlite3.Connection, p: dict) -> None:
         (
             p["id"],
             p["src"],
-            p["type"],
+            normalize_predicate_label(p["type"]),
             p["dst"],
             json.dumps(p.get("props") or {}, sort_keys=True),
             p.get("valid_from"),
             p.get("valid_to"),
         ),
     )
+
+
+def _apply_edge_retracted(conn: sqlite3.Connection, p: dict) -> None:
+    # The event (with its reason: removed vs edited) stays in the log; only
+    # the projection forgets the edge and its evidence links.
+    conn.execute("DELETE FROM support WHERE subject_kind = 'edge' AND subject_id = ?", (p["id"],))
+    conn.execute("DELETE FROM edge WHERE id = ?", (p["id"],))
 
 
 def _apply_support_added(conn: sqlite3.Connection, p: dict) -> None:
@@ -104,6 +118,7 @@ _APPLIERS: dict[str, Callable[[sqlite3.Connection, dict], None]] = {
     ev.ANCHOR_ADDED: _apply_anchor_added,
     ev.NODE_ASSERTED: _apply_node_asserted,
     ev.EDGE_ASSERTED: _apply_edge_asserted,
+    ev.EDGE_RETRACTED: _apply_edge_retracted,
     ev.SUPPORT_ADDED: _apply_support_added,
 }
 

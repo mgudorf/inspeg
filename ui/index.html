@@ -8,7 +8,13 @@
 </head>
 <body>
   <header>
-    <h1>inspeg</h1>
+    <div class="brand">
+      <h1>inspeg</h1>
+      <nav>
+        <a href="/" class="active">capture</a>
+        <a href="/graph.html">graph</a>
+      </nav>
+    </div>
     <div id="stats" class="stats"></div>
   </header>
   <main>
@@ -30,7 +36,8 @@
     <form id="assert" class="card hidden">
       <div class="triple">
         <input id="src" placeholder="subject" list="entity-list" autocomplete="off" required>
-        <input id="type" placeholder="predicate" list="type-list" autocomplete="off" required>
+        <input id="type" class="predicate" placeholder="PREDICATE" list="type-list"
+               autocomplete="off" required>
         <input id="dst" placeholder="object" list="entity-list" autocomplete="off" required>
       </div>
       <input id="note" placeholder="context note (optional)" autocomplete="off">
@@ -44,6 +51,7 @@
 
     <ul id="session" class="session"></ul>
   </main>
+  <script src="common.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

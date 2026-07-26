@@ -6,6 +6,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Graph page** (`/graph.html`): every edge in a table sortable by
+  subject/predicate/object, with manual add, edit, and delete. Deleting
+  records an `edge_retracted` event (reason `removed`); editing is
+  retract-with-reason-`edited` + re-assert in one transaction, evidence
+  anchors carried over — the log keeps the full correction history.
+  New endpoints: `GET/PUT/DELETE /api/edges…`, `GET/POST /api/predicates`.
+- Manual assertions without an evidence anchor are allowed and visibly
+  weaker: the Evidence column shows 0.
+- The Store now replays the event log automatically whenever a new schema
+  migration lands, making "replay, don't migrate" the default behavior.
+
+### Changed
+
+- **Predicates are a controlled ALL_CAPS vocabulary**
+  ([ADR 0003](docs/adr/0003-predicate-vocabulary.md)): labels normalize to
+  `^[A-Z][A-Z0-9_]*$` (`instance of` → `INSTANCE_OF`), and asserting an edge
+  no longer creates a predicate implicitly — creating one is a deliberate
+  extra step (`POST /api/predicates` or `create_predicate: true`; one
+  confirmation click in the UI). Migration `0003_predicate_vocabulary.sql`
+  triggers a replay that re-projects pre-vocabulary data.
+- **App-local HTML is no longer stored.** CF_HTML without a `SourceURL`
+  (editors, IDEs, office apps) is styling markup with no provenance value;
+  captures now keep only the plain text (from the text sibling, or the
+  fragment stripped of tags). Browser captures with a `SourceURL` still store
+  the full HTML with `href`s intact.
+
 ### Security
 
 Full analysis of each vector, with the test that proves the fix, in

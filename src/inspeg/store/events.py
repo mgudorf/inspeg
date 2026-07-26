@@ -18,6 +18,7 @@ ARTIFACT_REDACTED = "artifact_redacted"
 ANCHOR_ADDED = "anchor_added"
 NODE_ASSERTED = "node_asserted"
 EDGE_ASSERTED = "edge_asserted"
+EDGE_RETRACTED = "edge_retracted"
 SUPPORT_ADDED = "support_added"
 
 

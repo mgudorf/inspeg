@@ -89,6 +89,7 @@ def test_same_origin_requests_still_work(client, capture):
             "src_label": "A",
             "edge_type": "r",
             "dst_label": "B",
+            "create_predicate": True,
         },
         headers=headers,
     )
@@ -206,6 +207,7 @@ def test_node_search_limit_is_clamped(client, capture):
                 "src_label": f"n{i}",
                 "edge_type": "r",
                 "dst_label": "B",
+                "create_predicate": True,
             },
         )
     assert len(client.get("/api/nodes", params={"q": "", "limit": 10_000}).json()) <= 100
@@ -252,6 +254,7 @@ def test_sql_injection_in_labels_is_inert(client, capture):
             "src_label": hostile,
             "edge_type": "r",
             "dst_label": "B",
+            "create_predicate": True,
         },
     )
     assert response.status_code == 200, response.text
@@ -268,6 +271,7 @@ def test_sql_wildcards_in_search_are_literal(client, capture):
                 "src_label": label,
                 "edge_type": "r",
                 "dst_label": "B",
+                "create_predicate": True,
             },
         )
     # '_' matches any character in LIKE; escaped, it matches only itself.
@@ -286,6 +290,7 @@ def test_script_payload_in_a_label_survives_as_inert_data(client, capture):
             "src_label": payload,
             "edge_type": "r",
             "dst_label": "B",
+            "create_predicate": True,
         },
     )
     assert response.json()["src"]["label"] == payload

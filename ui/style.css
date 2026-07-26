@@ -30,6 +30,18 @@ header {
 
 h1 { font-size: 15px; letter-spacing: 0.1em; margin: 0; }
 
+.brand { display: flex; align-items: baseline; gap: 18px; }
+nav { display: flex; gap: 12px; }
+nav a {
+  color: var(--dim);
+  text-decoration: none;
+  font-size: 13px;
+  padding-bottom: 2px;
+  border-bottom: 2px solid transparent;
+}
+nav a:hover { color: var(--text); }
+nav a.active { color: var(--text); border-bottom-color: var(--accent); }
+
 main {
   max-width: 720px;
   margin: 0 auto;
@@ -99,7 +111,8 @@ input {
   font: inherit;
 }
 input:focus { outline: none; border-color: var(--accent); }
-#type { color: var(--accent); font-style: italic; }
+input.predicate { color: var(--accent); text-transform: uppercase; }
+input.predicate::placeholder { text-transform: none; }
 #note { margin-top: 8px; }
 
 .row { display: flex; align-items: center; gap: 12px; margin-top: 10px; }
@@ -131,6 +144,45 @@ button:hover { filter: brightness(1.1); }
   color: var(--dim);
 }
 .session .t { color: var(--accent); font-style: italic; }
+
+/* ── graph table ─────────────────────────────────────────────────────── */
+
+main.wide { max-width: 960px; }
+
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); }
+th {
+  color: var(--dim);
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  user-select: none;
+}
+th.sortable { cursor: pointer; }
+th.sortable:hover { color: var(--text); }
+th.sortable[data-dir="asc"]::after { content: " ▲"; color: var(--accent); }
+th.sortable[data-dir="desc"]::after { content: " ▼"; color: var(--accent); }
+tbody tr:last-child td { border-bottom: none; }
+tbody tr:hover td { background: rgba(94, 161, 255, 0.05); }
+td.predicate { color: var(--accent); }
+td.num, th.num { text-align: right; }
+td.num a { color: var(--ok); text-decoration: none; }
+td.num a:hover { text-decoration: underline; }
+td.num .none { color: var(--err); }
+td.actions { text-align: right; white-space: nowrap; }
+
+button.ghost {
+  background: transparent;
+  color: var(--dim);
+  border: 1px solid var(--line);
+  font-weight: 400;
+}
+button.ghost:hover { color: var(--text); border-color: var(--dim); filter: none; }
+button.ghost.danger:hover { color: var(--err); border-color: var(--err); }
+button.small { padding: 3px 9px; font-size: 12px; border-radius: 6px; }
+
+.spacer { margin-left: auto; text-align: right; }
 
 kbd {
   background: var(--card);

@@ -1,0 +1,11 @@
+-- 0003_predicate_vocabulary.sql
+-- Predicates became a controlled ALL_CAPS vocabulary (ADR 0003): edge-type
+-- node labels and the denormalized edge.type column are normalized by the
+-- projection at apply time, and asserting an edge no longer creates a new
+-- predicate implicitly.
+--
+-- No schema change is needed — this migration exists so the Store detects a
+-- new migration and replays the event log, which re-projects pre-vocabulary
+-- events (e.g. an old 'instance_of') into their normalized form
+-- ('INSTANCE_OF'). Nothing in the log itself is touched.
+SELECT 1;

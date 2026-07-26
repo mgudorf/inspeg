@@ -26,7 +26,14 @@ from a model's suggestions.
 | `anchor_added` | anchor columns (selector as JSON object) + `capture_id` | `anchor` |
 | `node_asserted` | `{id, label, props}` | `node`, `node_alias` |
 | `edge_asserted` | `{id, src, type, type_node_id, dst, props, valid_from, valid_to}` | `edge` |
+| `edge_retracted` | `{id, reason}` (`removed` \| `edited`) | deletes from `edge` + its `support` rows |
 | `support_added` | `{subject_kind, subject_id, anchor_id, role}` | `support` |
+
+Removing an edge is an `edge_retracted` event — the projection forgets it,
+the log never does. Editing an edge is `edge_retracted` (reason `edited`) +
+a fresh `edge_asserted` in one transaction, with the evidence anchors carried
+over; the correction itself is the valuable training signal, so it is never
+rewritten in place.
 
 `capture_id` groups sibling artifacts from one clipboard capture (one copy
 often yields HTML *and* plain text). It lives only in the log — provenance
@@ -55,7 +62,9 @@ Offsets are **character** offsets into the artifact's UTF-8-decoded text
 
 - **node** — `label` is the canonical surface form. Edge-type nodes carry
   `props.kind = "edge_type"`; nothing else distinguishes them, by design
-  (types are nodes, not strings).
+  (types are nodes, not strings). Predicate labels are a controlled ALL_CAPS
+  vocabulary ([ADR 0003](adr/0003-predicate-vocabulary.md)): normalized to
+  `^[A-Z][A-Z0-9_]*$`, and never created implicitly by asserting an edge.
 - **node_alias** — every asserted label is also recorded as an alias;
   entity-resolution merges (M3) extend this table.
 - **edge** — `type` holds the edge-type node's *label*, denormalized for
@@ -64,8 +73,10 @@ Offsets are **character** offsets into the artifact's UTF-8-decoded text
   `valid_from`/`valid_to` (when the fact was true, vs. observed) are unused
   in M0.
 - **support** — evidence for any assertion:
-  `role ∈ evidence | commentary | counterexample`. M0 writes one
-  `evidence` row per asserted edge, pointing at the capture anchor.
+  `role ∈ evidence | commentary | counterexample`. A captured assertion gets
+  one `evidence` row pointing at the capture anchor; a manual entry from the
+  graph page has none, which the UI surfaces as `evidence = 0` rather than
+  hiding.
 - **proposal** — the decision record (accepted/rejected/edited/deferred).
   Present in the schema from day one, written from M4. It is *not* cleared by
   replay because proposals are not yet event-sourced.
@@ -74,4 +85,7 @@ Offsets are **character** offsets into the artifact's UTF-8-decoded text
 
 Numbered `.sql` files in `schema/`, applied in filename order, tracked by
 filename in `schema_migration`. Never edit an applied migration; if the
-projection shape changes, write a new migration and rely on replay.
+projection shape changes, write a new migration and rely on replay — the
+Store replays automatically whenever a new migration lands on a non-empty
+log, so a migration file may exist purely to trigger re-projection
+(`0003_predicate_vocabulary.sql` is the precedent).

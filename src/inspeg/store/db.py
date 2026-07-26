@@ -15,12 +15,13 @@ from inspeg.util import resource_dir, utcnow_iso
 
 
 def open_db(path: Path) -> sqlite3.Connection:
+    """Connect with the standard pragmas. Migrations are applied by the Store,
+    which replays the projection whenever a new migration lands."""
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA foreign_keys = ON")
-    apply_migrations(conn)
     return conn
 
 

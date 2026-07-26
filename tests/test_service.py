@@ -38,11 +38,32 @@ def test_html_capture_with_source_url_is_tier_2(store):
     assert html[selector["start"] : selector["end"]] == "<p>Kùzu is <b>embedded</b></p>"
 
 
-def test_html_capture_without_source_url_is_tier_3(store):
-    snap = ClipboardSnapshot(cf_html=build_cf_html("<p>hi</p>"), source_app="word.exe | Doc1")
+def test_html_capture_without_source_url_keeps_only_text(store):
+    """App-local HTML (editors, IDEs) is styling junk around the text; without
+    a SourceURL there is no provenance value in keeping it, so only the plain
+    text is stored (see docs/provenance.md)."""
+    styled = '<div style="color:#a5d6ff;font-family:Consolas">KL divergence</div>'
+    snap = ClipboardSnapshot(
+        cf_html=build_cf_html(styled), text="KL divergence", source_app="Code.exe | notes"
+    )
     capture = service.ingest_clipboard(store, snap)
     assert capture.provenance == "attributed"
     assert capture.source_url is None
+    artifact = store.query_one("SELECT * FROM artifact WHERE id = ?", (capture.artifact_id,))
+    assert artifact["mimetype"] == "text/plain"
+    assert store.blobs.get(capture.artifact_id).decode() == "KL divergence"
+    # No HTML artifact at all — one text/plain artifact is the whole capture.
+    assert store.query_one("SELECT COUNT(*) AS c FROM artifact")["c"] == 1
+
+
+def test_html_without_source_url_or_text_sibling_derives_text(store):
+    snap = ClipboardSnapshot(
+        cf_html=build_cf_html('<div style="x">only <b>html</b></div>'),
+        source_app="word.exe | Doc1",
+    )
+    capture = service.ingest_clipboard(store, snap)
+    assert capture.provenance == "attributed"
+    assert store.blobs.get(capture.artifact_id).decode() == "only html"
 
 
 def test_text_only_capture_with_app_is_tier_3(store):
@@ -87,18 +108,20 @@ def test_assert_edge_creates_nodes_type_node_and_support(store):
         store,
         anchor_id=capture.anchor_id,
         src_label="  Microsoft   Corp. ",
-        edge_type="instance_of",
+        edge_type="instance of",
         dst_label="Tech Company",
         note="from the quiz",
+        create_predicate=True,
     )
     assert result["src"]["label"] == "Microsoft Corp."  # whitespace normalized
+    assert result["type"]["label"] == "INSTANCE_OF"  # predicates are ALL_CAPS
 
     edge = store.query_one("SELECT * FROM edge WHERE id = ?", (result["id"],))
-    assert edge["type"] == "instance_of"
+    assert edge["type"] == "INSTANCE_OF"
 
     # Types are nodes, not strings (§3.4).
     type_node = store.query_one(
-        "SELECT * FROM node WHERE label = 'instance_of' "
+        "SELECT * FROM node WHERE label = 'INSTANCE_OF' "
         "AND json_extract(props, '$.kind') = 'edge_type'"
     )
     assert type_node is not None
@@ -119,10 +142,15 @@ def test_assert_edge_creates_nodes_type_node_and_support(store):
 def test_assert_edge_reuses_existing_nodes(store):
     capture = service.ingest_clipboard(store, ClipboardSnapshot(text="x", source_app="a.exe"))
     first = service.assert_edge(
-        store, anchor_id=capture.anchor_id, src_label="A", edge_type="rel", dst_label="B"
+        store,
+        anchor_id=capture.anchor_id,
+        src_label="A",
+        edge_type="REL",
+        dst_label="B",
+        create_predicate=True,
     )
     second = service.assert_edge(
-        store, anchor_id=capture.anchor_id, src_label="A", edge_type="rel", dst_label="C"
+        store, anchor_id=capture.anchor_id, src_label="A", edge_type="REL", dst_label="C"
     )
     assert first["src"]["id"] == second["src"]["id"]
     assert first["type"]["id"] == second["type"]["id"]
@@ -140,7 +168,12 @@ def test_replay_after_real_session_is_stable(store):
         store, ClipboardSnapshot(cf_html=build_cf_html("<p>r</p>", source_url="https://r.test/"))
     )
     service.assert_edge(
-        store, anchor_id=capture.anchor_id, src_label="A", edge_type="rel", dst_label="B"
+        store,
+        anchor_id=capture.anchor_id,
+        src_label="A",
+        edge_type="REL",
+        dst_label="B",
+        create_predicate=True,
     )
     counts_before = {
         table: store.query_one(f"SELECT COUNT(*) AS c FROM {table}")["c"]

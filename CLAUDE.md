@@ -31,6 +31,11 @@ python -m inspeg --no-hotkey           # API/UI only, works on any platform
    `human` from `proposer:<name>` — that separation is the product.
 4. **Types are nodes** (`props.kind = "edge_type"`), not strings.
    `edge.type` holds the type node's label purely as a denormalization.
+   Predicates are a controlled ALL_CAPS vocabulary (ADR 0003): normalized to
+   `^[A-Z][A-Z0-9_]*$`, never created implicitly by asserting an edge, and
+   normalized mechanically in the projection so replay handles old events.
+   Edges are removed/edited only via `edge_retracted` events (edits =
+   retract + re-assert, evidence carried) — never by mutating rows.
 5. **Blobs never go in the database** — content-addressed files under
    `blobs/<aa>/<sha256>`; `artifact.path` is data-dir-relative.
 6. **Schema changes = new numbered file in `schema/`**, never an edit to an

@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+_PREDICATE_SEPARATORS = re.compile(r"[\s\-]+")
 
 
 def utcnow_iso() -> str:
@@ -16,6 +19,15 @@ def utcnow_iso() -> str:
 
 def new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex}"
+
+
+def normalize_predicate_label(label: str) -> str:
+    """Mechanical normalization for predicate labels: trim, collapse runs of
+    whitespace/hyphens into ``_``, uppercase. Charset *validation* lives in the
+    service layer — this function must never raise, because the projection uses
+    it to normalize historical events during replay.
+    """
+    return _PREDICATE_SEPARATORS.sub("_", label.strip()).upper()
 
 
 def canonical_json(obj: Any) -> str:

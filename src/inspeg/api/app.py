@@ -29,13 +29,31 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from inspeg import __version__, service
-from inspeg.model.schemas import AssertEdgeRequest, CaptureOut, EdgeOut, NodeOut
+from inspeg.model.schemas import (
+    AssertEdgeRequest,
+    CaptureOut,
+    EdgeOut,
+    EdgeRow,
+    NodeOut,
+    PredicateCreate,
+    UpdateEdgeRequest,
+)
 from inspeg.store import Store
 from inspeg.store import events as ev
 from inspeg.util import resource_dir
 
 # Starlette compares the Host header with the port stripped.
 _LOOPBACK_HOSTS = ["127.0.0.1", "localhost"]
+
+
+def _unknown_predicate_detail(exc: Exception) -> str:
+    # The "unknown predicate" prefix is a contract with the UI, which offers
+    # the create-and-retry step when it sees it.
+    label = exc.args[0] if exc.args else "?"
+    return (
+        f"unknown predicate {label!r}: predicates are a controlled vocabulary — "
+        "create it first (POST /api/predicates) or pass create_predicate=true"
+    )
 
 
 def create_app(
@@ -187,6 +205,21 @@ def create_app(
         )
         return [NodeOut(id=row["id"], label=row["label"]) for row in rows]
 
+    @app.get("/api/predicates", response_model=list[NodeOut])
+    def get_predicates() -> list[NodeOut]:
+        return [NodeOut(**row) for row in service.list_predicates(store)]
+
+    @app.post("/api/predicates", response_model=NodeOut)
+    def post_predicate(req: PredicateCreate) -> NodeOut:
+        try:
+            return NodeOut(**service.create_predicate(store, req.label))
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    @app.get("/api/edges", response_model=list[EdgeRow])
+    def get_edges() -> list[EdgeRow]:
+        return [EdgeRow(**row) for row in service.list_edges(store)]
+
     @app.post("/api/edges", response_model=EdgeOut)
     def post_edge(req: AssertEdgeRequest) -> EdgeOut:
         try:
@@ -197,12 +230,43 @@ def create_app(
                 edge_type=req.edge_type,
                 dst_label=req.dst_label,
                 note=req.note,
+                create_predicate=req.create_predicate,
             )
         except service.UnknownAnchorError as exc:
             raise HTTPException(404, f"unknown anchor: {req.anchor_id}") from exc
+        except service.UnknownPredicateError as exc:
+            raise HTTPException(422, _unknown_predicate_detail(exc)) from exc
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
         return EdgeOut(**result)
+
+    @app.put("/api/edges/{edge_id}", response_model=EdgeOut)
+    def put_edge(edge_id: str, req: UpdateEdgeRequest) -> EdgeOut:
+        try:
+            result = service.update_edge(
+                store,
+                edge_id,
+                src_label=req.src_label,
+                edge_type=req.edge_type,
+                dst_label=req.dst_label,
+                note=req.note,
+                create_predicate=req.create_predicate,
+            )
+        except service.UnknownEdgeError as exc:
+            raise HTTPException(404, f"unknown edge: {edge_id}") from exc
+        except service.UnknownPredicateError as exc:
+            raise HTTPException(422, _unknown_predicate_detail(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        return EdgeOut(**result)
+
+    @app.delete("/api/edges/{edge_id}")
+    def delete_edge(edge_id: str) -> dict:
+        try:
+            service.retract_edge(store, edge_id)
+        except service.UnknownEdgeError as exc:
+            raise HTTPException(404, f"unknown edge: {edge_id}") from exc
+        return {"ok": True, "edge_id": edge_id}
 
     # Mounted last so /api/* routes win.
     app.mount("/", StaticFiles(directory=resource_dir("ui"), html=True), name="ui")

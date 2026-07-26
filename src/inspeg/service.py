@@ -7,8 +7,10 @@ second), so the log stays the complete database of record.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
-from dataclasses import dataclass, field
+from collections.abc import Sequence
+from dataclasses import dataclass, field, replace
 from urllib.parse import urlsplit
 
 from bs4 import BeautifulSoup
@@ -18,7 +20,7 @@ from inspeg.adapters.clipboard import ClipboardSnapshot
 from inspeg.model.schemas import TextPositionSelector
 from inspeg.store import Store
 from inspeg.store import events as ev
-from inspeg.util import canonical_json, new_id, utcnow_iso
+from inspeg.util import canonical_json, new_id, normalize_predicate_label, utcnow_iso
 
 EXCERPT_LIMIT = 500
 # Excerpts come from at most this much raw HTML: parsing an entire pasted
@@ -30,6 +32,9 @@ EXCERPT_HTML_SLICE = 64 * 1024
 MAX_CAPTURE_BYTES = 16 * 1024 * 1024
 
 _BLOB_RELPATH = re.compile(r"blobs/[0-9a-f]{2}/[0-9a-f]{64}")
+
+# Predicates are a controlled vocabulary of ALL_CAPS identifiers (ADR 0003).
+PREDICATE_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]*$")
 
 
 class EmptyCaptureError(ValueError):
@@ -46,6 +51,14 @@ class UnknownAnchorError(KeyError):
 
 class UnknownArtifactError(KeyError):
     """The referenced artifact does not exist."""
+
+
+class UnknownEdgeError(KeyError):
+    """The referenced edge does not exist (or was already retracted)."""
+
+
+class UnknownPredicateError(KeyError):
+    """The predicate is not in the vocabulary and creation was not requested."""
 
 
 @dataclass(frozen=True)
@@ -112,7 +125,20 @@ def _ingest_html(
             return _ingest_text(store, snap, capture_id, captured_at)
         raise EmptyCaptureError(f"malformed CF_HTML and no text fallback: {exc}") from exc
 
-    provenance = "sourced" if cf.source_url else "attributed"
+    if not cf.source_url:
+        # App-local HTML (editors, IDEs, office apps) is styling markup around
+        # the text — <div style="..."> wrappers with no provenance value, since
+        # without a SourceURL the tier is 'attributed' either way. Keep only
+        # the text: the CF_UNICODETEXT sibling if present, else the fragment
+        # stripped of tags. See docs/provenance.md.
+        if not (snap.text or "").strip():
+            derived = html_to_text(cf.fragment)
+            if not derived.strip():
+                raise EmptyCaptureError("clipboard HTML contained no text")
+            snap = replace(snap, text=derived)
+        return _ingest_text(store, snap, capture_id, captured_at)
+
+    provenance = "sourced"
     artifact_id = _add_artifact(
         store,
         data=cf.html.encode("utf-8"),
@@ -283,39 +309,81 @@ def get_or_create_node(
     return node_id, label
 
 
-def assert_edge(
+def normalize_predicate(label: str) -> str:
+    """Normalize and validate a predicate label against the vocabulary rules."""
+    normalized = normalize_predicate_label(label)
+    if not PREDICATE_PATTERN.fullmatch(normalized):
+        raise ValueError(
+            f"invalid predicate {label!r}: predicates are ALL_CAPS identifiers "
+            "(letters, digits, underscores; must start with a letter)"
+        )
+    return normalized
+
+
+def list_predicates(store: Store) -> list[dict]:
+    rows = store.query(
+        "SELECT id, label FROM node WHERE json_extract(props, '$.kind') = 'edge_type'"
+        " ORDER BY label"
+    )
+    return [{"id": row["id"], "label": row["label"]} for row in rows]
+
+
+def create_predicate(store: Store, label: str, *, actor: str = "human") -> dict:
+    """Add a predicate to the vocabulary. Deliberately a separate action from
+    asserting an edge (§10.2: a new edge type costs one extra click)."""
+    normalized = normalize_predicate(label)
+    with store.tx():
+        node_id, normalized = get_or_create_node(store, normalized, kind="edge_type", actor=actor)
+    return {"id": node_id, "label": normalized}
+
+
+def _resolve_predicate(
+    store: Store, edge_type: str, *, create: bool, actor: str
+) -> tuple[str, str]:
+    label = normalize_predicate(edge_type)
+    row = store.query_one(
+        "SELECT id FROM node WHERE label = ? AND json_extract(props, '$.kind') = 'edge_type'",
+        (label,),
+    )
+    if row is not None:
+        return row["id"], label
+    if not create:
+        raise UnknownPredicateError(label)
+    return get_or_create_node(store, label, kind="edge_type", actor=actor)
+
+
+def _record_edge(
     store: Store,
     *,
-    anchor_id: str,
     src_label: str,
     edge_type: str,
     dst_label: str,
-    note: str | None = None,
-    actor: str = "human",
+    anchor_ids: Sequence[str],
+    note: str | None,
+    create_predicate: bool,
+    actor: str,
 ) -> dict:
-    """Assert one typed edge supported by one anchor as evidence."""
-    if store.query_one("SELECT id FROM anchor WHERE id = ?", (anchor_id,)) is None:
-        raise UnknownAnchorError(anchor_id)
-    with store.tx():
-        src_id, src = get_or_create_node(store, src_label, actor=actor)
-        type_id, type_label = get_or_create_node(store, edge_type, kind="edge_type", actor=actor)
-        dst_id, dst = get_or_create_node(store, dst_label, actor=actor)
-        edge_id = new_id("e")
-        props = {"context": note.strip()} if note and note.strip() else {}
-        store.record(
-            ev.EDGE_ASSERTED,
-            {
-                "id": edge_id,
-                "src": src_id,
-                "type": type_label,  # denormalized into the projection for query speed
-                "type_node_id": type_id,
-                "dst": dst_id,
-                "props": props,
-                "valid_from": None,
-                "valid_to": None,
-            },
-            actor,
-        )
+    """Node resolution + edge/support events. Caller holds the transaction."""
+    src_id, src = get_or_create_node(store, src_label, actor=actor)
+    type_id, type_label = _resolve_predicate(store, edge_type, create=create_predicate, actor=actor)
+    dst_id, dst = get_or_create_node(store, dst_label, actor=actor)
+    edge_id = new_id("e")
+    props = {"context": note.strip()} if note and note.strip() else {}
+    store.record(
+        ev.EDGE_ASSERTED,
+        {
+            "id": edge_id,
+            "src": src_id,
+            "type": type_label,  # denormalized into the projection for query speed
+            "type_node_id": type_id,
+            "dst": dst_id,
+            "props": props,
+            "valid_from": None,
+            "valid_to": None,
+        },
+        actor,
+    )
+    for anchor_id in anchor_ids:
         store.record(
             ev.SUPPORT_ADDED,
             {
@@ -331,5 +399,121 @@ def assert_edge(
         "src": {"id": src_id, "label": src},
         "type": {"id": type_id, "label": type_label},
         "dst": {"id": dst_id, "label": dst},
-        "anchor_id": anchor_id,
+        "anchor_id": anchor_ids[0] if anchor_ids else None,
+        "note": props.get("context"),
     }
+
+
+def assert_edge(
+    store: Store,
+    *,
+    src_label: str,
+    edge_type: str,
+    dst_label: str,
+    anchor_id: str | None = None,
+    note: str | None = None,
+    create_predicate: bool = False,
+    actor: str = "human",
+) -> dict:
+    """Assert one typed edge, optionally supported by one anchor as evidence.
+
+    ``anchor_id=None`` records a manual, unevidenced assertion — legitimate,
+    but visibly weaker: the graph view shows its evidence count as zero.
+    """
+    if anchor_id is not None and (
+        store.query_one("SELECT id FROM anchor WHERE id = ?", (anchor_id,)) is None
+    ):
+        raise UnknownAnchorError(anchor_id)
+    with store.tx():
+        return _record_edge(
+            store,
+            src_label=src_label,
+            edge_type=edge_type,
+            dst_label=dst_label,
+            anchor_ids=[anchor_id] if anchor_id else [],
+            note=note,
+            create_predicate=create_predicate,
+            actor=actor,
+        )
+
+
+def retract_edge(
+    store: Store, edge_id: str, *, reason: str = "removed", actor: str = "human"
+) -> None:
+    """Remove an edge from the projection; the log keeps the full history."""
+    if store.query_one("SELECT id FROM edge WHERE id = ?", (edge_id,)) is None:
+        raise UnknownEdgeError(edge_id)
+    with store.tx():
+        store.record(ev.EDGE_RETRACTED, {"id": edge_id, "reason": reason}, actor)
+
+
+def update_edge(
+    store: Store,
+    edge_id: str,
+    *,
+    src_label: str,
+    edge_type: str,
+    dst_label: str,
+    note: str | None = None,
+    create_predicate: bool = False,
+    actor: str = "human",
+) -> dict:
+    """Edit = retract + re-assert in one transaction; evidence carries over.
+
+    The corrected edge gets a new id and the log records both steps (the
+    retraction carries ``reason: edited``) — corrections are the valuable
+    part of the corpus, so they are never rewritten in place.
+    """
+    if store.query_one("SELECT id FROM edge WHERE id = ?", (edge_id,)) is None:
+        raise UnknownEdgeError(edge_id)
+    anchor_ids = [
+        row["anchor_id"]
+        for row in store.query(
+            "SELECT anchor_id FROM support"
+            " WHERE subject_kind = 'edge' AND subject_id = ? AND role = 'evidence'",
+            (edge_id,),
+        )
+    ]
+    with store.tx():
+        store.record(ev.EDGE_RETRACTED, {"id": edge_id, "reason": "edited"}, actor)
+        return _record_edge(
+            store,
+            src_label=src_label,
+            edge_type=edge_type,
+            dst_label=dst_label,
+            anchor_ids=anchor_ids,
+            note=note,
+            create_predicate=create_predicate,
+            actor=actor,
+        )
+
+
+def list_edges(store: Store) -> list[dict]:
+    """Every edge with its labels, note, and evidence — the graph-table feed."""
+    rows = store.query(
+        """SELECT e.id, e.type, e.props,
+                  s.id AS src_id, s.label AS src_label,
+                  d.id AS dst_id, d.label AS dst_label,
+                  (SELECT COUNT(*) FROM support sp
+                    WHERE sp.subject_kind = 'edge' AND sp.subject_id = e.id
+                      AND sp.role = 'evidence') AS evidence,
+                  (SELECT sp.anchor_id FROM support sp
+                    WHERE sp.subject_kind = 'edge' AND sp.subject_id = e.id
+                      AND sp.role = 'evidence' LIMIT 1) AS anchor_id
+           FROM edge e
+           JOIN node s ON s.id = e.src
+           JOIN node d ON d.id = e.dst
+           ORDER BY e.rowid DESC"""
+    )
+    return [
+        {
+            "id": row["id"],
+            "src": {"id": row["src_id"], "label": row["src_label"]},
+            "type": row["type"],
+            "dst": {"id": row["dst_id"], "label": row["dst_label"]},
+            "note": (json.loads(row["props"]) or {}).get("context"),
+            "evidence": row["evidence"],
+            "anchor_id": row["anchor_id"],
+        }
+        for row in rows
+    ]

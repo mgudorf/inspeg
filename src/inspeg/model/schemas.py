@@ -18,11 +18,24 @@ class TextPositionSelector(BaseModel):
 
 
 class AssertEdgeRequest(BaseModel):
-    anchor_id: str = Field(min_length=1)
+    src_label: str = Field(min_length=1)
+    edge_type: str = Field(min_length=1)
+    dst_label: str = Field(min_length=1)
+    anchor_id: str | None = None  # None = manual, unevidenced assertion
+    note: str | None = None
+    create_predicate: bool = False  # the deliberate extra step (ADR 0003)
+
+
+class UpdateEdgeRequest(BaseModel):
     src_label: str = Field(min_length=1)
     edge_type: str = Field(min_length=1)
     dst_label: str = Field(min_length=1)
     note: str | None = None
+    create_predicate: bool = False
+
+
+class PredicateCreate(BaseModel):
+    label: str = Field(min_length=1)
 
 
 class NodeOut(BaseModel):
@@ -35,7 +48,20 @@ class EdgeOut(BaseModel):
     src: NodeOut
     type: NodeOut
     dst: NodeOut
-    anchor_id: str
+    anchor_id: str | None = None
+    note: str | None = None
+
+
+class EdgeRow(BaseModel):
+    """One row of the graph table: labels denormalized, evidence counted."""
+
+    id: str
+    src: NodeOut
+    type: str
+    dst: NodeOut
+    note: str | None = None
+    evidence: int
+    anchor_id: str | None = None
 
 
 class CaptureOut(BaseModel):

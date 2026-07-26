@@ -1,38 +1,6 @@
 "use strict";
 
-const $ = (id) => document.getElementById(id);
-
 let anchorId = new URLSearchParams(location.search).get("anchor");
-
-const TIER_LABELS = {
-  exact: "tier 1 · exact",
-  sourced: "tier 2 · sourced",
-  attributed: "tier 3 · attributed",
-  orphan: "tier 4 · orphan",
-};
-
-async function api(path, options) {
-  const res = await fetch(path, options);
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(typeof body.detail === "string" ? body.detail : res.statusText);
-  }
-  return res.json();
-}
-
-function escapeHtml(s) {
-  return s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
-}
-
-async function loadStats() {
-  try {
-    const s = await api("/api/stats");
-    $("stats").textContent =
-      `${s.artifact} artifacts · ${s.anchor} anchors · ${s.node} nodes · ${s.edge} edges`;
-  } catch {
-    $("stats").textContent = "";
-  }
-}
 
 async function loadAnchor() {
   let detail;
@@ -71,25 +39,6 @@ async function loadAnchor() {
   $("src").focus();
 }
 
-function suggest(input, listId, kind) {
-  input.addEventListener("input", async () => {
-    const q = input.value.trim();
-    if (!q) return;
-    const kindParam = kind ? `&kind=${kind}` : "";
-    const nodes = await api(`/api/nodes?q=${encodeURIComponent(q)}${kindParam}`).catch(() => []);
-    $(listId).innerHTML = nodes
-      .map((n) => `<option value="${escapeHtml(n.label)}"></option>`)
-      .join("");
-  });
-}
-
-function flash(message, ok) {
-  const el = $("flash");
-  el.textContent = message;
-  el.className = `flash ${ok ? "ok" : "err"}`;
-  if (ok) setTimeout(() => (el.textContent = ""), 2500);
-}
-
 function addToSession(edge) {
   const li = document.createElement("li");
   li.innerHTML =
@@ -104,16 +53,12 @@ $("assert").addEventListener("submit", async (event) => {
   const body = {
     anchor_id: anchorId,
     src_label: $("src").value,
-    edge_type: $("type").value,
+    edge_type: normalizePredicate($("type").value),
     dst_label: $("dst").value,
     note: $("note").value || null,
   };
   try {
-    const edge = await api("/api/edges", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
+    const edge = await submitEdge("/api/edges", body);
     flash("asserted ✓", true);
     addToSession(edge);
     $("src").value = "";
@@ -121,14 +66,15 @@ $("assert").addEventListener("submit", async (event) => {
     $("note").value = "";
     $("src").focus(); // predicate is kept — it usually repeats
     loadStats();
+    loadPredicateList("type-list");
   } catch (err) {
     flash(err.message, false);
   }
 });
 
-suggest($("src"), "entity-list", null);
-suggest($("dst"), "entity-list", null);
-suggest($("type"), "type-list", "edge_type");
+suggestEntities($("src"), "entity-list");
+suggestEntities($("dst"), "entity-list");
 
 loadStats();
+loadPredicateList("type-list");
 loadAnchor();

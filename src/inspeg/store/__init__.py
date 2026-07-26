@@ -13,7 +13,7 @@ from typing import Any
 
 from inspeg.store import projection
 from inspeg.store.blobstore import BlobStore
-from inspeg.store.db import open_db
+from inspeg.store.db import apply_migrations, open_db
 from inspeg.store.events import append_event
 
 
@@ -62,6 +62,12 @@ class Store:
         self.blobs = BlobStore(self.data_dir)
         self.conn = open_db(self.data_dir / "inspeg.db")
         self._lock = threading.RLock()
+        # A new migration on an existing log means the projection's shape or
+        # semantics changed: rebuild it from the events (the §3.2 insurance
+        # policy — "replay, don't migrate").
+        migrations_ran = apply_migrations(self.conn)
+        if migrations_ran and self.query_one("SELECT 1 FROM event LIMIT 1") is not None:
+            self.replay()
         self._sweep_stale_files()
 
     def _sweep_stale_files(self) -> None:
