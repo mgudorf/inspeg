@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>inspeg &middot; quick capture</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>inspeg</h1>
+    <div id="stats" class="stats"></div>
+  </header>
+  <main>
+    <section id="empty" class="card hidden">
+      <p>No capture loaded.</p>
+      <p class="dim">Copy something, then press <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>A</kbd>.</p>
+    </section>
+
+    <section id="capture" class="card hidden">
+      <div class="meta">
+        <span id="tier" class="badge"></span>
+        <a id="source" class="source hidden" target="_blank" rel="noopener"></a>
+        <span id="app" class="dim"></span>
+        <time id="when" class="dim"></time>
+      </div>
+      <blockquote id="excerpt"></blockquote>
+    </section>
+
+    <form id="assert" class="card hidden">
+      <div class="triple">
+        <input id="src" placeholder="subject" list="entity-list" autocomplete="off" required>
+        <input id="type" placeholder="predicate" list="type-list" autocomplete="off" required>
+        <input id="dst" placeholder="object" list="entity-list" autocomplete="off" required>
+      </div>
+      <input id="note" placeholder="context note (optional)" autocomplete="off">
+      <div class="row">
+        <button type="submit">Assert edge</button>
+        <span id="flash" class="flash"></span>
+      </div>
+      <datalist id="entity-list"></datalist>
+      <datalist id="type-list"></datalist>
+    </form>
+
+    <ul id="session" class="session"></ul>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>
