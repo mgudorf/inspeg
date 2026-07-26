@@ -50,9 +50,11 @@ Full analysis of each vector, with the test that proves the fix, in
 
 ### Changed
 
-- **Default hotkey is now `win+shift+a`** (was `ctrl+alt+a`): Windows
-  synthesizes AltGr as Ctrl+Alt, so the old default fired while users on
-  non-US keyboard layouts were typing.
+- **Default hotkey is now `ctrl+shift+alt+i`** (was `ctrl+alt+a`, briefly
+  `win+shift+a`): Windows synthesizes AltGr as Ctrl+Alt, so the original
+  default fired while users on non-US keyboard layouts were typing, and
+  `win+shift+a` turned out to collide with existing app registrations.
+  Requiring Shift on top of Ctrl+Alt keeps plain AltGr typing safe.
 - Captures run on a worker thread instead of the hotkey message loop, so a
   slow capture no longer freezes the hotkey.
 - Closing the console window now releases the store lock and unregisters the

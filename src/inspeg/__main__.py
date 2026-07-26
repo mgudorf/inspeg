@@ -17,9 +17,12 @@ from inspeg.api.app import create_app
 from inspeg.store import Store, StoreLockedError
 
 DEFAULT_PORT = 8137
-# Not ctrl+alt+<key>: AltGr on many non-US layouts is synthesized as Ctrl+Alt,
-# so a ctrl+alt hotkey fires while people type. See docs/security.md.
-DEFAULT_HOTKEY = "win+shift+a"
+# Not bare ctrl+alt+<key>: AltGr on many non-US layouts is synthesized as
+# Ctrl+Alt, so such a hotkey fires while people type. Requiring Shift as well
+# keeps plain AltGr typing safe. See docs/security.md. RegisterHotKey cannot
+# distinguish left from right modifiers; left-only would need a low-level
+# keyboard hook, which the no-passive-observation rule forbids.
+DEFAULT_HOTKEY = "ctrl+shift+alt+i"
 
 log = logging.getLogger("inspeg")
 
@@ -75,7 +78,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--host", default="127.0.0.1", help="bind address (loopback only)")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
-    parser.add_argument("--hotkey", default=DEFAULT_HOTKEY, help="capture hotkey, e.g. win+shift+a")
+    parser.add_argument(
+        "--hotkey", default=DEFAULT_HOTKEY, help="capture hotkey, e.g. ctrl+shift+alt+i"
+    )
     parser.add_argument("--no-hotkey", action="store_true", help="run the API/UI only")
     parser.add_argument(
         "--allow-remote",

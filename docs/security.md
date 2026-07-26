@@ -238,11 +238,21 @@ layouts, a user typing an ordinary AltGr character would fire an unintended
 capture — passive capture by accident, on a machine the developer never tests
 on. Microsoft's own guidance is to avoid Ctrl+Alt for hotkeys.
 
-**Fixed by** changing the default to `win+shift+a`. `--hotkey` still accepts
-anything, including Ctrl+Alt for users who want it.
+**Fixed by** requiring more than Ctrl+Alt in the default. The default was
+first moved to `win+shift+a`, which proved to collide with other apps'
+registrations in practice; it is now `ctrl+shift+alt+i`. That still contains
+Ctrl+Alt, but plain AltGr typing never sets Shift, so AltGr characters cannot
+fire it — only Shift+AltGr+I could, which no common layout uses for ordinary
+typing. `--hotkey` still accepts anything, including bare Ctrl+Alt for users
+who want it.
 
-**Tests:** `test_default_hotkey_avoids_ctrl_alt` (asserts the property, not
-the literal string, so it keeps holding if the default changes again),
+Note that `RegisterHotKey` cannot distinguish left from right modifiers
+(left-only would require a low-level keyboard hook — passive observation of
+every keystroke, which this project forbids), so right-side modifiers fire
+the hotkey too.
+
+**Tests:** `test_default_hotkey_avoids_bare_ctrl_alt` (asserts the property,
+not the literal string, so it keeps holding if the default changes again),
 `test_hotkey_requires_a_modifier`.
 
 ## V13 — Clipboard could be left locked system-wide

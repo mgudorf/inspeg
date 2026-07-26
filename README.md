@@ -25,10 +25,10 @@ inspeg
 ```
 
 1. The daemon starts on `http://127.0.0.1:8137` and registers the global
-   hotkey **Win+Shift+A** (Windows).
+   hotkey **Ctrl+Shift+Alt+I** (Windows).
 2. Copy something in any app — a paragraph from your browser, a line from an
    editor.
-3. Press **Win+Shift+A**. The quick-capture window opens showing what you
+3. Press **Ctrl+Shift+Alt+I**. The quick-capture window opens showing what you
    captured, its provenance tier, and the source URL when the clipboard
    carried one.
 4. Type a triple — `SQLite` —`has_license`→ `Public Domain` — and hit
@@ -43,9 +43,12 @@ Captured something you shouldn't have? `POST /api/artifacts/<sha256>/redact`
 destroys the content and keeps the provenance record
 ([ADR 0002](docs/adr/0002-redaction.md)).
 
-The default hotkey is **Win+Shift+A** rather than Ctrl+Alt+A because Windows
-synthesizes AltGr as Ctrl+Alt — a Ctrl+Alt hotkey fires while people on
-non-US keyboard layouts are typing. Override with `--hotkey`.
+The default hotkey is **Ctrl+Shift+Alt+I** rather than a bare Ctrl+Alt combo
+because Windows synthesizes AltGr as Ctrl+Alt — a Ctrl+Alt hotkey fires while
+people on non-US keyboard layouts are typing, and requiring Shift as well
+keeps plain AltGr typing safe. Override with `--hotkey` if it clashes with
+anything on your machine (registration failures show up in the log and in
+`/api/health`).
 
 ## Provenance tiers
 

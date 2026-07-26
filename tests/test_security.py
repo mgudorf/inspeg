@@ -422,15 +422,18 @@ def test_concurrent_puts_of_same_content_use_distinct_temp_files(tmp_path):
 # ── V12: hotkey does not collide with AltGr ─────────────────────────────────
 
 
-def test_default_hotkey_avoids_ctrl_alt():
-    """Ctrl+Alt is how AltGr is synthesized on many non-US layouts: such a
-    hotkey fires while the user is typing ordinary characters."""
+def test_default_hotkey_avoids_bare_ctrl_alt():
+    """Ctrl+Alt is how AltGr is synthesized on many non-US layouts: a hotkey
+    of exactly ctrl+alt+<key> fires while the user is typing ordinary
+    characters. A default that includes ctrl+alt must therefore also require
+    a further modifier (shift or win), which plain AltGr typing never sets."""
     from inspeg.__main__ import DEFAULT_HOTKEY
     from inspeg.adapters.hotkey import _MOD_FLAGS, parse_hotkey
 
     mods, _ = parse_hotkey(DEFAULT_HOTKEY)
     ctrl_alt = _MOD_FLAGS["ctrl"] | _MOD_FLAGS["alt"]
-    assert mods & ctrl_alt != ctrl_alt
+    if mods & ctrl_alt == ctrl_alt:
+        assert mods & (_MOD_FLAGS["shift"] | _MOD_FLAGS["win"])
 
 
 def test_hotkey_requires_a_modifier():
