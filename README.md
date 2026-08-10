@@ -50,12 +50,13 @@ Captured something you shouldn't have? `POST /api/artifacts/<sha256>/redact`
 destroys the content and keeps the provenance record
 ([ADR 0002](docs/adr/0002-redaction.md)).
 
-The default hotkey is **Ctrl+Shift+Alt+I** rather than a bare Ctrl+Alt combo
-because Windows synthesizes AltGr as Ctrl+Alt — a Ctrl+Alt hotkey fires while
-people on non-US keyboard layouts are typing, and requiring Shift as well
-keeps plain AltGr typing safe. Override with `--hotkey` if it clashes with
-anything on your machine (registration failures show up in the log and in
-`/api/health`).
+Capture lives in the Chrome and VS Code right-click menus; the one global
+hotkey left is the HUD toggle, **Ctrl+Shift+Alt+G**. It is not a bare
+Ctrl+Alt combo because Windows synthesizes AltGr as Ctrl+Alt — a Ctrl+Alt
+hotkey fires while people on non-US keyboard layouts are typing, and
+requiring Shift as well keeps plain AltGr typing safe. Override with
+`--hud-hotkey` if it clashes with anything on your machine (registration
+failures show up in the log and in `/api/health`).
 
 ## Provenance tiers
 

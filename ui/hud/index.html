@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>inspeg &middot; hud</title>
+  <link rel="stylesheet" href="hud.css">
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span class="logo">inspeg</span>
+      <span id="watch-state" class="dim"></span>
+    </div>
+    <nav id="tabs">
+      <button data-view="context" class="active">Here</button>
+      <button data-view="tree">Tree</button>
+      <button data-view="labels">Labels</button>
+      <button data-view="graph">Graph</button>
+      <button data-view="queue">Queue<span id="queue-count" class="count"></span></button>
+    </nav>
+  </header>
+
+  <section id="context-band">
+    <div id="context-now" class="dim">no context yet</div>
+  </section>
+
+  <main id="content"></main>
+
+  <section id="assert-bar" class="hidden">
+    <div class="assert-subject dim" id="assert-subject"></div>
+    <div class="triple">
+      <input id="assert-src" placeholder="subject" autocomplete="off">
+      <input id="assert-type" class="predicate" placeholder="PREDICATE" list="predicate-list"
+             autocomplete="off">
+      <input id="assert-dst" placeholder="object" autocomplete="off">
+    </div>
+    <div class="row">
+      <button id="assert-go">Assert</button>
+      <button id="assert-cancel" class="ghost">Cancel</button>
+      <span id="assert-flash" class="flash"></span>
+    </div>
+    <datalist id="predicate-list"></datalist>
+  </section>
+
+  <script src="hud.js"></script>
+</body>
+</html>

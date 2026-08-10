@@ -1,26 +1,48 @@
 """Capture ingestion and human assertions — the only writers to the store.
 
 Every mutation here goes through ``Store.record`` (event first, projection
-second), so the log stays the complete database of record.
+second), so the log stays the complete database of record. Writers:
+``ingest_clipboard``, ``ingest_web_capture``, ``ingest_code_capture``,
+``capture_pointer``, ``apply_label`` / ``remove_label``,
+``upgrade_artifact_source``, ``assert_edge`` / ``update_edge`` /
+``retract_edge``, ``create_predicate``, ``redact_artifact``,
+``delete_artifact``.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 from urllib.parse import urlsplit
 
 from bs4 import BeautifulSoup
 
 from inspeg.adapters.cfhtml import CfHtmlError, parse_cf_html
 from inspeg.adapters.clipboard import ClipboardSnapshot
-from inspeg.model.schemas import TextPositionSelector
+from inspeg.model.schemas import (
+    CodeSpanSelector,
+    Selector,
+    TextPositionSelector,
+    TextQuoteSelector,
+    WholeItemSelector,
+)
 from inspeg.store import Store
 from inspeg.store import events as ev
-from inspeg.util import canonical_json, new_id, normalize_predicate_label, utcnow_iso
+from inspeg.util import (
+    canonical_file_path,
+    canonical_json,
+    derive_context_key,
+    new_id,
+    normalize_predicate_label,
+    normalize_source_uri,
+    split_source_app,
+    utcnow_iso,
+)
 
 EXCERPT_LIMIT = 500
 # Excerpts come from at most this much raw HTML: parsing an entire pasted
@@ -35,6 +57,17 @@ _BLOB_RELPATH = re.compile(r"blobs/[0-9a-f]{2}/[0-9a-f]{64}")
 
 # Predicates are a controlled vocabulary of ALL_CAPS identifiers (ADR 0003).
 PREDICATE_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]*$")
+
+# Pointer artifacts (ADR 0005): kinds, target-length sanity bound, and the
+# hashing policy — files below the limit get a streamed content hash for rot
+# detection; audio/video are never read at all.
+POINTER_KINDS = ("url", "file")
+POINTER_TARGET_MAX = 4096
+POINTER_HASH_LIMIT = 256 * 1024 * 1024
+_AV_MIME_PREFIXES = ("audio/", "video/")
+
+# Provenance ranks for upgrade monotonicity (mirror of projection's table).
+_PROVENANCE_RANK = {"exact": 1, "sourced": 2, "attributed": 3, "orphan": 4}
 
 
 class EmptyCaptureError(ValueError):
@@ -59,6 +92,14 @@ class UnknownEdgeError(KeyError):
 
 class UnknownPredicateError(KeyError):
     """The predicate is not in the vocabulary and creation was not requested."""
+
+
+class UnknownLabelError(KeyError):
+    """The label does not exist on this anchor (or at all)."""
+
+
+class InvalidPointerError(ValueError):
+    """The pointer target is malformed or its kind is unknown."""
 
 
 @dataclass(frozen=True)
@@ -148,6 +189,7 @@ def _ingest_html(
         source_app=snap.source_app,
         capture_id=capture_id,
         captured_at=captured_at,
+        surface="hotkey",
     )
     anchor_id = _add_anchor(
         store,
@@ -169,6 +211,7 @@ def _ingest_html(
                 source_app=snap.source_app,
                 capture_id=capture_id,
                 captured_at=captured_at,
+                surface="hotkey",
             )
         )
 
@@ -198,6 +241,7 @@ def _ingest_text(
         source_app=snap.source_app,
         capture_id=capture_id,
         captured_at=captured_at,
+        surface="hotkey",
     )
     anchor_id = _add_anchor(
         store, artifact_id, TextPositionSelector(start=0, end=len(text)), capture_id
@@ -222,31 +266,45 @@ def _add_artifact(
     captured_at: str,
     source_uri: str | None = None,
     source_app: str | None = None,
+    source_exe: str | None = None,
+    source_title: str | None = None,
+    context_key: str | None = None,
+    surface: str | None = None,
 ) -> str:
     digest, rel = store.blobs.put(data)
+    uri_norm = normalize_source_uri(source_uri)
+    if source_exe is None and source_title is None:
+        source_exe, source_title = split_source_app(source_app)
+    if context_key is None:
+        context_key = derive_context_key(uri_norm, source_exe, None)
     store.record(
         ev.ARTIFACT_ADDED,
         {
             "id": digest,
+            "kind": "blob",
             "mimetype": mimetype,
             "byte_len": len(data),
             "path": rel,
+            "locator": None,
             "captured_at": captured_at,
             "provenance": provenance,
             "source_uri": source_uri,
+            "source_uri_norm": uri_norm,
+            "source_exe": source_exe,
+            "source_title": source_title,
+            "context_key": context_key,
             "source_app": source_app,
             "derived_from": None,
             "derivation": None,
             "capture_id": capture_id,
+            "surface": surface,
         },
     )
     return digest
 
 
-def _add_anchor(
-    store: Store, artifact_id: str, selector: TextPositionSelector, capture_id: str
-) -> str:
-    sel = selector.model_dump()
+def _add_anchor(store: Store, artifact_id: str, selector: Selector, capture_id: str) -> str:
+    sel = selector.model_dump(exclude_none=True)
     anchor_id = _anchor_id(artifact_id, sel)
     store.record(
         ev.ANCHOR_ADDED,
@@ -276,8 +334,30 @@ def redact_artifact(store: Store, artifact_id: str, *, actor: str = "human") -> 
         with store.tx():
             store.record(ev.ARTIFACT_REDACTED, {"id": artifact_id}, actor)
     # After the event is durable: delete the file, but only a path shaped like
-    # ours — the DB value names a file we are about to unlink.
-    if _BLOB_RELPATH.fullmatch(row["path"]):
+    # ours — the DB value names a file we are about to unlink. Pointer
+    # artifacts have no path (ADR 0005): the flag is the whole redaction.
+    if row["path"] and _BLOB_RELPATH.fullmatch(row["path"]):
+        (store.data_dir / row["path"]).unlink(missing_ok=True)
+
+
+def delete_artifact(store: Store, artifact_id: str, *, actor: str = "human") -> None:
+    """Hard-delete one artifact: projection rows, anchors, their labels, and
+    the blob file all go (ADR 0010).
+
+    Unlike redaction (which keeps the provenance skeleton), delete leaves
+    nothing visible anywhere. The event log keeps only a tombstone —
+    ``{"id": …}``, no content — so the log stays append-only and replay
+    reproduces the deletion. Nodes and edges are untouched: they are asserted
+    knowledge, not capture rows. Idempotent at the API layer via the 404.
+    """
+    row = store.query_one("SELECT id, path FROM artifact WHERE id = ?", (artifact_id,))
+    if row is None:
+        raise UnknownArtifactError(artifact_id)
+    with store.tx():
+        store.record(ev.ARTIFACT_DELETED, {"id": artifact_id}, actor)
+    # After the event is durable: unlink the blob, same guard as redaction —
+    # only a path shaped like ours, and pointers have no path at all.
+    if row["path"] and _BLOB_RELPATH.fullmatch(row["path"]):
         (store.data_dir / row["path"]).unlink(missing_ok=True)
 
 
@@ -286,6 +366,508 @@ def _normalize_label(label: str) -> str:
     if not normalized:
         raise ValueError("label must not be blank")
     return normalized
+
+
+# ── Labels (ADR 0006): one-click topical tagging ────────────────────────────
+
+
+def _record_label(store: Store, anchor_id: str, label: str, *, surface: str, actor: str) -> dict:
+    """Topic node + support row. Caller holds the transaction. Idempotent by
+    check-then-record so a repeated click appends no duplicate event."""
+    node_id, canonical = get_or_create_node(store, label, kind="topic", actor=actor)
+    existing = store.query_one(
+        "SELECT 1 FROM support WHERE subject_kind = 'node' AND subject_id = ?"
+        " AND anchor_id = ? AND role = 'label'",
+        (node_id, anchor_id),
+    )
+    if existing is None:
+        store.record(
+            ev.SUPPORT_ADDED,
+            {
+                "subject_kind": "node",
+                "subject_id": node_id,
+                "anchor_id": anchor_id,
+                "role": "label",
+                "surface": surface,
+            },
+            actor,
+        )
+    return {"id": node_id, "label": canonical, "created": existing is None}
+
+
+def apply_label(
+    store: Store, anchor_id: str, label: str, *, surface: str = "hud", actor: str = "human"
+) -> dict:
+    """Tag one anchor with a topic label — the one-click primitive."""
+    if store.query_one("SELECT id FROM anchor WHERE id = ?", (anchor_id,)) is None:
+        raise UnknownAnchorError(anchor_id)
+    with store.tx():
+        return _record_label(store, anchor_id, label, surface=surface, actor=actor)
+
+
+def remove_label(store: Store, anchor_id: str, label: str, *, actor: str = "human") -> None:
+    """Retract a label; the log keeps the full history (ADR 0006)."""
+    label = _normalize_label(label)
+    row = store.query_one(
+        "SELECT id FROM node WHERE label = ? AND json_extract(props, '$.kind') = 'topic'",
+        (label,),
+    )
+    if row is None:
+        raise UnknownLabelError(label)
+    existing = store.query_one(
+        "SELECT 1 FROM support WHERE subject_kind = 'node' AND subject_id = ?"
+        " AND anchor_id = ? AND role = 'label'",
+        (row["id"], anchor_id),
+    )
+    if existing is None:
+        raise UnknownLabelError(label)
+    with store.tx():
+        store.record(
+            ev.SUPPORT_REMOVED,
+            {
+                "subject_kind": "node",
+                "subject_id": row["id"],
+                "anchor_id": anchor_id,
+                "role": "label",
+            },
+            actor,
+        )
+
+
+def list_labels(store: Store, *, sort: str = "recent", limit: int = 10) -> list[dict]:
+    """Topic labels for menus: ``recent`` reads the event log (the log *is*
+    the MRU), ``frequent`` counts live support rows. Fully-retracted labels
+    drop out of both."""
+    limit = max(1, min(limit, 100))
+    counts = {
+        row["subject_id"]: row["c"]
+        for row in store.query(
+            "SELECT subject_id, COUNT(*) AS c FROM support"
+            " WHERE subject_kind = 'node' AND role = 'label' GROUP BY subject_id"
+        )
+    }
+    if not counts:
+        return []
+    placeholders = ",".join("?" * len(counts))
+    names = {
+        row["id"]: row["label"]
+        for row in store.query(
+            f"SELECT id, label FROM node WHERE id IN ({placeholders})",
+            list(counts),
+        )
+    }
+    if sort == "frequent":
+        ordered = sorted(counts, key=lambda nid: (-counts[nid], names.get(nid, "")))[:limit]
+    else:
+        ordered = []
+        seen: set[str] = set()
+        for row in store.query(
+            "SELECT payload FROM event WHERE kind = ? ORDER BY seq DESC LIMIT 1000",
+            (ev.SUPPORT_ADDED,),
+        ):
+            p = json.loads(row["payload"])
+            nid = p.get("subject_id")
+            if p.get("role") != "label" or nid in seen or nid not in counts:
+                continue
+            seen.add(nid)
+            ordered.append(nid)
+            if len(ordered) >= limit:
+                break
+    return [{"id": nid, "label": names.get(nid, "?"), "count": counts[nid]} for nid in ordered]
+
+
+# ── Pointer artifacts (ADR 0005) ────────────────────────────────────────────
+
+
+def _pointer_identity(kind: str, target: str) -> tuple[str, str]:
+    """(stable target, pointer id). The id hashes only the stable identity —
+    volatile facts ride the payload so re-captures dedupe."""
+    if kind not in POINTER_KINDS:
+        raise InvalidPointerError(f"unknown pointer kind: {kind!r}")
+    target = (target or "").strip()
+    if not target or len(target) > POINTER_TARGET_MAX:
+        raise InvalidPointerError("pointer target is empty or unreasonably long")
+    if kind == "url":
+        stable = normalize_source_uri(target)
+        if stable is None:
+            raise InvalidPointerError(f"not a valid URL: {target!r}")
+    else:
+        stable = canonical_file_path(target)
+    digest = hashlib.sha256(canonical_json({"kind": kind, "target": stable}).encode()).hexdigest()
+    return stable, f"pt_{digest}"
+
+
+def _file_volatile_facts(stable: str, mimetype: str) -> dict:
+    """Best-effort stat + streamed hash for file pointers. Audio/video are
+    never read (ADR 0005); a vanished file degrades to bare identity."""
+    facts: dict = {}
+    try:
+        st = os.stat(stable)
+    except OSError:
+        return facts
+    facts["byte_len"] = st.st_size
+    facts["mtime"] = st.st_mtime_ns
+    if st.st_size < POINTER_HASH_LIMIT and not mimetype.startswith(_AV_MIME_PREFIXES):
+        try:
+            h = hashlib.sha256()
+            with open(stable, "rb") as fh:
+                for chunk in iter(lambda: fh.read(1 << 20), b""):
+                    h.update(chunk)
+            facts["content_sha256"] = h.hexdigest()
+        except OSError:
+            pass
+    return facts
+
+
+def capture_pointer(
+    store: Store,
+    *,
+    kind: str,
+    target: str,
+    mimetype: str = "application/octet-stream",
+    page_uri: str | None = None,
+    source_title: str | None = None,
+    source_exe: str | None = None,
+    labels: Sequence[str] = (),
+    context_key: str | None = None,
+    surface: str,
+    actor: str = "human",
+) -> dict:
+    """One metadata-pointer capture: pointer artifact + whole-item anchor +
+    labels. Never copies or downloads the target (ADR 0005)."""
+    stable, pointer_id = _pointer_identity(kind, target)
+    locator: dict = {"kind": kind, "target": stable}
+    if kind == "file":
+        locator |= _file_volatile_facts(stable, mimetype)
+        provenance = "attributed"
+        source_uri = page_uri
+    else:
+        provenance = "sourced"
+        source_uri = page_uri or target
+    uri_norm = normalize_source_uri(source_uri)
+    if context_key is None:
+        context_key = derive_context_key(uri_norm, source_exe, locator)
+    captured_at = utcnow_iso()
+    capture_id = new_id("cap")
+    with store.tx():
+        store.record(
+            ev.ARTIFACT_ADDED,
+            {
+                "id": pointer_id,
+                "kind": "pointer",
+                "mimetype": mimetype,
+                "byte_len": locator.get("byte_len"),
+                "path": None,
+                "locator": locator,
+                "captured_at": captured_at,
+                "provenance": provenance,
+                "source_uri": source_uri,
+                "source_uri_norm": uri_norm,
+                "source_exe": source_exe,
+                "source_title": source_title,
+                "context_key": context_key,
+                "source_app": None,
+                "derived_from": None,
+                "derivation": None,
+                "capture_id": capture_id,
+                "surface": surface,
+            },
+            actor,
+        )
+        anchor_id = _add_anchor(store, pointer_id, WholeItemSelector(), capture_id)
+        applied = [
+            _record_label(store, anchor_id, label, surface=surface, actor=actor) for label in labels
+        ]
+    return {
+        "artifact_id": pointer_id,
+        "anchor_id": anchor_id,
+        "provenance": provenance,
+        "captured_at": captured_at,
+        "locator": locator,
+        "labels": applied,
+    }
+
+
+# ── Web capture (browser extension; ADR 0007) ───────────────────────────────
+
+
+def ingest_web_capture(
+    store: Store,
+    *,
+    url: str,
+    title: str | None = None,
+    doc_text: str | None = None,
+    selection_exact: str,
+    selection_prefix: str = "",
+    selection_suffix: str = "",
+    selection_start: int | None = None,
+    selection_end: int | None = None,
+    selection_html: str | None = None,
+    labels: Sequence[str] = (),
+    surface: str = "browser",
+    actor: str = "human",
+) -> dict:
+    """A browser selection capture.
+
+    HTML pages send ``doc_text`` (the implicit Document artifact — deduped by
+    content hash, so revisits reuse it) plus quote/position selectors into it:
+    provenance ``exact``. The PDF-viewer path has no document text (Chrome's
+    viewer runs no content scripts): the selection itself becomes a text
+    artifact plus a pointer to the document URL, provenance ``sourced``.
+    """
+    for name, value in (
+        ("doc_text", doc_text),
+        ("selection_exact", selection_exact),
+        ("selection_html", selection_html),
+    ):
+        if value is not None and len(value) > MAX_CAPTURE_BYTES:
+            raise CaptureTooLargeError(f"{name} exceeds the capture limit")
+    if not selection_exact.strip():
+        raise EmptyCaptureError("selection is empty")
+    uri_norm = normalize_source_uri(url)
+    if uri_norm is None:
+        raise InvalidPointerError(f"not a valid URL: {url!r}")
+    captured_at = utcnow_iso()
+    capture_id = new_id("cap")
+    context_key = f"url:{uri_norm}"
+
+    if doc_text is None:
+        # PDF / no-content-script path.
+        with store.tx():
+            artifact_id = _add_artifact(
+                store,
+                data=selection_exact.encode("utf-8"),
+                mimetype="text/plain",
+                provenance="sourced",
+                source_uri=url,
+                source_title=title,
+                context_key=context_key,
+                capture_id=capture_id,
+                captured_at=captured_at,
+                surface=surface,
+            )
+            anchor_id = _add_anchor(
+                store,
+                artifact_id,
+                TextPositionSelector(start=0, end=len(selection_exact)),
+                capture_id,
+            )
+            _stable, doc_pointer_id = _pointer_identity("url", url)
+            store.record(
+                ev.ARTIFACT_ADDED,
+                {
+                    "id": doc_pointer_id,
+                    "kind": "pointer",
+                    "mimetype": "application/pdf",
+                    "byte_len": None,
+                    "path": None,
+                    "locator": {"kind": "url", "target": _stable},
+                    "captured_at": captured_at,
+                    "provenance": "sourced",
+                    "source_uri": url,
+                    "source_uri_norm": uri_norm,
+                    "source_exe": None,
+                    "source_title": title,
+                    "context_key": context_key,
+                    "source_app": None,
+                    "derived_from": None,
+                    "derivation": None,
+                    "capture_id": capture_id,
+                    "surface": surface,
+                },
+                actor,
+            )
+            applied = [
+                _record_label(store, anchor_id, label, surface=surface, actor=actor)
+                for label in labels
+            ]
+        return {
+            "artifact_id": artifact_id,
+            "anchor_id": anchor_id,
+            "document_artifact_id": doc_pointer_id,
+            "position_anchor_id": None,
+            "sibling_artifact_ids": [],
+            "provenance": "sourced",
+            "captured_at": captured_at,
+            "excerpt": selection_exact.strip()[:EXCERPT_LIMIT],
+            "labels": applied,
+        }
+
+    with store.tx():
+        document_id = _add_artifact(
+            store,
+            data=doc_text.encode("utf-8"),
+            mimetype="text/plain",
+            provenance="exact",
+            source_uri=url,
+            source_title=title,
+            context_key=context_key,
+            capture_id=capture_id,
+            captured_at=captured_at,
+            surface=surface,
+        )
+        quote_anchor_id = _add_anchor(
+            store,
+            document_id,
+            TextQuoteSelector(
+                exact=selection_exact, prefix=selection_prefix, suffix=selection_suffix
+            ),
+            capture_id,
+        )
+        position_anchor_id = None
+        if selection_start is not None and selection_end is not None:
+            position_anchor_id = _add_anchor(
+                store,
+                document_id,
+                TextPositionSelector(start=selection_start, end=selection_end),
+                capture_id,
+            )
+        siblings: list[str] = []
+        if selection_html and selection_html.strip():
+            siblings.append(
+                _add_artifact(
+                    store,
+                    data=selection_html.encode("utf-8"),
+                    mimetype="text/html",
+                    provenance="exact",
+                    source_uri=url,
+                    source_title=title,
+                    context_key=context_key,
+                    capture_id=capture_id,
+                    captured_at=captured_at,
+                    surface=surface,
+                )
+            )
+        applied = [
+            _record_label(store, quote_anchor_id, label, surface=surface, actor=actor)
+            for label in labels
+        ]
+    return {
+        "artifact_id": document_id,
+        "anchor_id": quote_anchor_id,
+        "document_artifact_id": document_id,
+        "position_anchor_id": position_anchor_id,
+        "sibling_artifact_ids": siblings,
+        "provenance": "exact",
+        "captured_at": captured_at,
+        "excerpt": selection_exact.strip()[:EXCERPT_LIMIT],
+        "labels": applied,
+    }
+
+
+# ── Code capture (VS Code extension) ────────────────────────────────────────
+
+
+def ingest_code_capture(
+    store: Store,
+    *,
+    text: str,
+    path: str,
+    start_line: int,
+    start_col: int,
+    end_line: int,
+    end_col: int,
+    workspace: str | None = None,
+    git_remote: str | None = None,
+    git_commit: str | None = None,
+    labels: Sequence[str] = (),
+    surface: str = "vscode",
+    actor: str = "human",
+) -> dict:
+    """An editor-selection capture: verbatim buffer text + code_span anchor.
+
+    Tier ``exact``: verbatim bytes, a verified file identity, and exact
+    offsets — with optional git identity for rot detection.
+    """
+    if len(text) > MAX_CAPTURE_BYTES:
+        raise CaptureTooLargeError("selection exceeds the capture limit")
+    if not text.strip():
+        raise EmptyCaptureError("selection is empty")
+    cpath = canonical_file_path(path)
+    source_uri = Path(cpath).as_uri()
+    context_key = f"workspace:{canonical_file_path(workspace)}" if workspace else f"file:{cpath}"
+    captured_at = utcnow_iso()
+    capture_id = new_id("cap")
+    with store.tx():
+        artifact_id = _add_artifact(
+            store,
+            data=text.encode("utf-8"),
+            mimetype="text/plain",
+            provenance="exact",
+            source_uri=source_uri,
+            source_title=Path(cpath).name,
+            context_key=context_key,
+            capture_id=capture_id,
+            captured_at=captured_at,
+            surface=surface,
+        )
+        anchor_id = _add_anchor(
+            store,
+            artifact_id,
+            CodeSpanSelector(
+                path=cpath,
+                start_line=start_line,
+                start_col=start_col,
+                end_line=end_line,
+                end_col=end_col,
+                git_remote=git_remote,
+                git_commit=git_commit,
+            ),
+            capture_id,
+        )
+        applied = [
+            _record_label(store, anchor_id, label, surface=surface, actor=actor) for label in labels
+        ]
+    return {
+        "artifact_id": artifact_id,
+        "anchor_id": anchor_id,
+        "provenance": "exact",
+        "captured_at": captured_at,
+        "excerpt": text.strip()[:EXCERPT_LIMIT],
+        "labels": applied,
+    }
+
+
+# ── Provenance tier upgrades (ADR 0008) ─────────────────────────────────────
+
+
+def upgrade_artifact_source(
+    store: Store,
+    artifact_id: str,
+    *,
+    source_uri: str,
+    source_title: str | None = None,
+    actor: str = "human",
+) -> bool:
+    """Record a source for an artifact captured without one.
+
+    Tier-monotonic: records (and applies) only when the new tier is strictly
+    better than the current one; returns False otherwise. Invariant #3 note:
+    ``actor='human'`` is only legitimate when the source rides the same user
+    gesture as the capture — a volunteered late upgrade must come in as
+    ``proposer:<name>`` and go through the proposal flow.
+    """
+    row = store.query_one("SELECT provenance FROM artifact WHERE id = ?", (artifact_id,))
+    if row is None:
+        raise UnknownArtifactError(artifact_id)
+    uri_norm = normalize_source_uri(source_uri)
+    if uri_norm is None:
+        raise InvalidPointerError(f"not a valid URL: {source_uri!r}")
+    if _PROVENANCE_RANK["sourced"] >= _PROVENANCE_RANK.get(row["provenance"], 99):
+        return False
+    with store.tx():
+        store.record(
+            ev.ARTIFACT_SOURCE_UPGRADED,
+            {
+                "id": artifact_id,
+                "source_uri": source_uri,
+                "source_uri_norm": uri_norm,
+                "source_title": source_title,
+                "provenance": "sourced",
+            },
+            actor,
+        )
+    return True
 
 
 def get_or_create_node(
@@ -488,10 +1070,23 @@ def update_edge(
         )
 
 
-def list_edges(store: Store) -> list[dict]:
-    """Every edge with its labels, note, and evidence — the graph-table feed."""
+def list_edges(
+    store: Store, *, limit: int = 100, cursor: int | None = None
+) -> tuple[list[dict], int | None]:
+    """A page of edges with labels, note, and evidence — the graph-table feed.
+
+    ``cursor`` is the opaque rowid of the last row of the previous page;
+    returns (rows, next_cursor). Unbounded listing died with the HUD plan —
+    every read path paginates.
+    """
+    limit = max(1, min(limit, 200))
+    where = ""
+    params: list = []
+    if cursor is not None:
+        where = "WHERE e.rowid < ?"
+        params.append(cursor)
     rows = store.query(
-        """SELECT e.id, e.type, e.props,
+        f"""SELECT e.rowid AS rid, e.id, e.type, e.props,
                   s.id AS src_id, s.label AS src_label,
                   d.id AS dst_id, d.label AS dst_label,
                   (SELECT COUNT(*) FROM support sp
@@ -503,8 +1098,11 @@ def list_edges(store: Store) -> list[dict]:
            FROM edge e
            JOIN node s ON s.id = e.src
            JOIN node d ON d.id = e.dst
-           ORDER BY e.rowid DESC"""
+           {where}
+           ORDER BY e.rowid DESC LIMIT ?""",
+        [*params, limit],
     )
+    next_cursor = rows[-1]["rid"] if len(rows) == limit else None
     return [
         {
             "id": row["id"],
@@ -516,4 +1114,4 @@ def list_edges(store: Store) -> list[dict]:
             "anchor_id": row["anchor_id"],
         }
         for row in rows
-    ]
+    ], next_cursor

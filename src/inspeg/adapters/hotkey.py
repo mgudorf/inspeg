@@ -45,13 +45,34 @@ class HotkeyListener(threading.Thread):
     """Daemon thread: dies with the process, so a closed terminal never
     leaves a hotkey registration behind. ``status`` is surfaced through
     ``/api/health`` — a hotkey that failed to register or died must be
-    visible, not silent."""
+    visible, not silent.
 
-    def __init__(self, spec: str, callback: Callable[[], None]) -> None:
+    This thread owns the process's ONLY win32 message pump. Everything that
+    needs one attaches here rather than starting a second pump: extra
+    hotkeys register as additional ids dispatched on ``msg.wParam``, and
+    ``on_pump_start`` (run on this thread after registration; returns an
+    uninstall callable) hosts the ``SetWinEventHook`` foreground watcher
+    (ADR 0004).
+    """
+
+    def __init__(
+        self,
+        spec: str,
+        callback: Callable[[], None],
+        *,
+        extra_hotkeys: list[tuple[int, str, Callable[[], None]]] | None = None,
+        on_pump_start: Callable[[], Callable[[], None] | None] | None = None,
+    ) -> None:
         super().__init__(name="inspeg-hotkey", daemon=True)
         self.spec = spec
         self.mods, self.vk = parse_hotkey(spec)  # fail fast, before the thread starts
         self.callback = callback
+        # Parsed up front so a bad spec fails at construction, like the primary.
+        self.extra = [
+            (hk_id, parse_hotkey(extra_spec), extra_spec, cb)
+            for hk_id, extra_spec, cb in (extra_hotkeys or [])
+        ]
+        self.on_pump_start = on_pump_start
         self.status = "pending"  # -> registered | failed | stopped
         self._tid: int | None = None
 
@@ -65,7 +86,23 @@ class HotkeyListener(threading.Thread):
             self.status = "failed"
             log.error("could not register hotkey %r (already in use by another app?)", self.spec)
             return
+        callbacks: dict[int, Callable[[], None]] = {_HOTKEY_ID: self.callback}
+        registered_extra: list[int] = []
+        for hk_id, (mods, vk), extra_spec, cb in self.extra:
+            if user32.RegisterHotKey(None, hk_id, mods | _MOD_NOREPEAT, vk):
+                callbacks[hk_id] = cb
+                registered_extra.append(hk_id)
+            else:
+                # Secondary hotkeys degrade (the feature stays reachable by
+                # other means); only the primary flips status to failed.
+                log.error("could not register secondary hotkey %r", extra_spec)
         self.status = "registered"
+        uninstall = None
+        if self.on_pump_start is not None:
+            try:
+                uninstall = self.on_pump_start()
+            except Exception:
+                log.exception("pump attachment failed (continuing without it)")
         try:
             msg = wintypes.MSG()
             while True:
@@ -76,11 +113,20 @@ class HotkeyListener(threading.Thread):
                     log.error("hotkey message loop failed (GetMessageW returned -1)")
                     break
                 if msg.message == _WM_HOTKEY:
-                    try:
-                        self.callback()
-                    except Exception:
-                        log.exception("hotkey callback failed")
+                    hotkey_callback = callbacks.get(int(msg.wParam))
+                    if hotkey_callback is not None:
+                        try:
+                            hotkey_callback()
+                        except Exception:
+                            log.exception("hotkey callback failed")
         finally:
+            if uninstall is not None:
+                try:
+                    uninstall()
+                except Exception:
+                    log.exception("pump attachment teardown failed")
+            for hk_id in registered_extra:
+                user32.UnregisterHotKey(None, hk_id)
             user32.UnregisterHotKey(None, _HOTKEY_ID)
             self.status = "stopped"
 

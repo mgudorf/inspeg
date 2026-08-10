@@ -22,6 +22,13 @@ blobs/
 .inspeg/
 data/
 
+# Extension packing key (the PUBLIC key in manifest.json is committed; the
+# private half is only needed to pack a .crx and must never be)
+extension/.private-key-note.txt
+
+# Built VS Code extension packages (scripts/build_vsix.py output)
+vscode-ext/*.vsix
+
 # OS / editor
 .DS_Store
 Thumbs.db

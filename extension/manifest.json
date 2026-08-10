@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "inspeg capture",
+  "version": "0.1.0",
+  "description": "Right-click capture into your local inspeg knowledge graph: label selections, images, and links in one click; revisit pages with your captures highlighted.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA2+LMdoLWQ/pQBoK7bIj5D1gJkMK1cOH1ugDJsbkRil7pFhbZkXLiUg9cMctDiJmfzqX71KcqeS2Xlg5yB84GYcbga8Ap1cOlsKvgDJwS2X680MK84OyXr9UQWiB+cgYwtmmD0u9V9xOUlnlfcwAXj8Yo/WSihX3rErjuCd36dFHlrsYh7FBJCb2dp1YXKoc62wyCB/i5eTx8OJ20hkuk4IgRJpVNCEanNWJVHvc+2CVzsIz5hneX1ye3wv/sRk3XzNwrNaFDscYmGRusNWNVhFzkMnYJH+UOCp1fRmuw8jHroxX1+guKXYYlYEQDJJOyiqHjYeGRah/7ugtYYyr9qwIDAQAB",
+  "permissions": ["contextMenus", "storage", "activeTab"],
+  "host_permissions": ["http://127.0.0.1:8137/*"],
+  "background": { "service_worker": "sw.js" },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": [
+        "anchoring/approx-string-match.js",
+        "anchoring/match-quote.js",
+        "anchoring/text-range.js",
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "options_page": "options.html",
+  "action": { "default_title": "inspeg" }
+}

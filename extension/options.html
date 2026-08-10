@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>inspeg capture — options</title>
+  <style>
+    body { font: 14px system-ui, sans-serif; max-width: 640px; margin: 2rem auto; color: #222; }
+    code { background: #f2f2f2; padding: 2px 5px; border-radius: 4px; }
+    .ok { color: #1f6f43; } .bad { color: #8f2f27; }
+    pre { background: #f7f7f7; padding: 10px; border-radius: 6px; overflow-x: auto; }
+  </style>
+</head>
+<body>
+  <h1>inspeg capture</h1>
+  <p>Daemon: <span id="status" class="bad">checking…</span></p>
+  <p>This extension's origin (allowlist it once on the daemon):</p>
+  <pre id="origin"></pre>
+  <pre id="command"></pre>
+  <p>
+    <label>
+      <input type="checkbox" id="context-toggle">
+      Report the active tab to the HUD context band (ephemeral — the daemon
+      never stores it; see ADR 0004). Takes effect once the daemon's context
+      watcher is enabled.
+    </label>
+  </p>
+  <script src="options.js"></script>
+</body>
+</html>

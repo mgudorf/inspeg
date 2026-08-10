@@ -17,6 +17,15 @@ test that fails if the control is removed. This file is the model itself.
   subscription, no polling. Nothing observes the clipboard unless invoked.
 - Records the foreground application name and window title at capture time
   (for provenance tier 3).
+- May track foreground-window **metadata** (process name, window title) and
+  accept active-tab/workspace pushes from the user-installed browser/IDE
+  extensions, solely to filter the HUD ([ADR 0004](docs/adr/0004-ephemeral-display-context.md)).
+  This context lives in daemon memory only — never written to disk, never
+  transmitted, never used to trigger a capture — and `--no-context-watch`
+  removes the hooks entirely. Be aware that window titles can reveal document
+  names, and that any local process can read the current context via
+  `GET /api/context` while the watcher is on (V16 in
+  [docs/security.md](docs/security.md)).
 - Binds to `127.0.0.1` only. A non-loopback `--host` is refused unless you
   pass `--allow-remote` and accept what that means. No network egress: it
   makes no outbound connections, phones nothing home, and has no telemetry.
@@ -35,6 +44,10 @@ V1–V3 in [docs/security.md](docs/security.md).
 - **No encryption at rest.** Blobs and the SQLite database are plain files.
   If you capture secrets, they sit on disk in the clear. Use full-disk
   encryption if that matters to you, and be deliberate about what you capture.
+  Captured text also lives in the search cache (`cache.db`) and SQLite's
+  WAL/`-shm` side files — redaction reaches the cache synchronously and a
+  startup reconcile backstops crashes, but backup and file-sync tooling sees
+  all of these files, not just `blobs/`.
 - **No authentication on the local API.** Any *process* on your machine that
   can reach `127.0.0.1:8137` can read your captures and write assertions.
   That is the standard posture of local daemons — such a process could read
@@ -54,14 +67,22 @@ skeleton — that something was captured, when, and from where — so assertions
 that cite it do not silently lose their attribution:
 
 ```
-curl -X POST http://127.0.0.1:8137/api/artifacts/<sha256>/redact
+curl -X POST -H "X-Inspeg-Capture: 1" http://127.0.0.1:8137/api/artifacts/<sha256>/redact
 ```
 
 The blob file is deleted and the artifact is flagged; `replay` will not
-resurrect it. This is the only sanctioned exception to blob immutability
-([ADR 0002](docs/adr/0002-redaction.md)). Note that redaction is per
-*content*: identical bytes captured twice share one blob, so both captures
-are redacted together.
+resurrect it. Note that redaction is per *content*: identical bytes captured
+twice share one blob, so both captures are redacted together.
+
+To remove a capture entirely — row, anchors, labels, and blob, leaving only
+an id tombstone in the log — use hard delete instead
+([ADR 0010](docs/adr/0010-hard-delete.md)); redaction and deletion are the
+two sanctioned exceptions to blob immutability
+([ADR 0002](docs/adr/0002-redaction.md)):
+
+```
+curl -X DELETE -H "X-Inspeg-Capture: 1" http://127.0.0.1:8137/api/artifacts/<sha256>
+```
 
 Content that has already been exported, synced, or backed up is beyond the
 tool's reach. Redact promptly.

@@ -17,7 +17,7 @@ The output is two things at once:
 
 Explicit, because each of these doubles the project:
 
-- **No passive/background capture.** No clipboard daemon, no screen recording, no ambient OCR. Every artifact enters the system because the user pressed something. This is a hard architectural constraint, not a phase-1 simplification.
+- **No passive/background capture** — amended by [ADR 0004](adr/0004-ephemeral-display-context.md). No clipboard daemon, no screen recording, no ambient OCR: **(2a)** nothing is *persisted* without a deliberate user action, and **(2b)** nothing observes *content* passively, ever. The sole exception **(2c)** is ephemeral display context: foreground-window metadata and extension-pushed tab/workspace identity, held in daemon memory only for the HUD, never written anywhere, never used to trigger or enrich a capture, and removable with one switch.
 - **No automatic extraction as source of truth.** Models may *propose*; only a human *asserts*. A proposal that was never accepted is still recorded (see §6.3), but it is not an edge.
 - **No cloud, no accounts, no sync** in v1. Single user, single machine.
 - **No general-purpose PKM.** Not competing with Obsidian. No editor, no daily notes, no wiki.
@@ -318,6 +318,17 @@ anchor/
 **SECURITY.md is required, not boilerplate.** A tool that reads the clipboard on demand and stores blobs unencrypted on disk needs a stated threat model and a stated non-model. Say plainly: local-only, no network egress by default, blobs unencrypted at rest, and the user is responsible for what they capture.
 
 ## 9. Milestones
+
+> **Plan-of-record update (2026-08, ADRs 0004–0009).** M0's gate ("use it
+> fifty times") is consciously overridden: the capture flow it was meant to
+> validate is being replaced wholesale by the multi-surface plan (Chrome +
+> VS Code context-menu capture, one-click labels, pointer artifacts, a
+> docked HUD), and the dogfood gate moves to the end of that build. M1's
+> "two-stage document-then-span flow enforced by the UI" becomes *implicit*:
+> the extension silently creates/reuses one Document artifact per page —
+> content addressing makes reuse free. Anchoring is vendored (prefer
+> Hypothesis `match-quote` + `approx-string-match`, fallback
+> `dom-anchor-text-quote`), never hand-written.
 
 **M0 — Vertical slice (target: one week).** Hotkey → CF_HTML parse → artifact + anchor → one typed edge → SQLite. Quick-capture window only, no graph view. *Gate: use it fifty times. If it doesn't feel good, no amount of architecture fixes it.*
 

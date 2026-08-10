@@ -35,9 +35,15 @@ dev = [
     "httpx>=0.27",
     "pre-commit>=3.5",
 ]
+# pywebview is BSD-3-Clause; its Windows backend deps (pythonnet, clr-loader)
+# are MIT. Verify at pin time (ADR 0009).
+hud = [
+    "pywebview>=6; sys_platform == 'win32'",
+]
 
 [project.scripts]
 inspeg = "inspeg.__main__:main"
+inspeg-hud = "inspeg.hud:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/inspeg"]

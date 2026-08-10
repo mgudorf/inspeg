@@ -1,59 +1,83 @@
-"""The single local endpoint: JSON API plus the quick-capture UI.
+"""The single local endpoint: JSON API plus the served UIs (quick capture, HUD).
 
 One process, one port, 127.0.0.1 only. Adapters are dumb clients of this API.
 
 Browser-facing hardening (see docs/security.md for the attack analysis):
 
-- **Host allowlist** (DNS rebinding): a malicious site can point its DNS at
-  127.0.0.1 and read this API same-origin; requests whose Host header is not
-  a loopback name are rejected with 400.
-- **Same-origin enforcement** (CSRF): browsers attach an ``Origin`` header to
-  every POST, including "simple" no-preflight ones. Any request whose Origin
-  does not match its own Host is rejected with 403. Non-browser clients
-  (curl, adapters) send no Origin and are unaffected.
-- **Capture header** (CSRF, belt-and-braces): the clipboard-capture POST has
-  no body, which makes it a CORS simple request — it additionally requires
-  the custom ``X-Inspeg-Capture`` header, which cross-origin JavaScript
-  cannot send without a preflight that will fail.
+- **Host allowlist** (V2, DNS rebinding): requests whose Host header is not a
+  loopback name are rejected with 400. Outermost middleware, always.
+- **Same-origin enforcement** (V1, CSRF): any request whose Origin does not
+  match its own Host is rejected with 403 — with exactly one carve-out (V15):
+  an Origin exactly matching a configured ``chrome-extension://<id>``
+  allowlist entry, and only on the extension-permitted routes. Never a
+  wildcard, and nothing at runtime can grow the allowlist (ADR 0007).
+- **Capture header** (V1 belt-and-braces): write routes require the custom
+  ``X-Inspeg-Capture`` header, which cross-origin JavaScript cannot send
+  without a preflight that will fail.
+- **CSP on served pages** (V18): daemon-served HTML runs only same-origin
+  scripts — window titles and captured strings render as text, never markup.
 """
 
 from __future__ import annotations
 
-import json
-import sys
-from collections.abc import Callable
+import re
+from collections.abc import Callable, Sequence
 
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from inspeg import __version__, service
-from inspeg.model.schemas import (
-    AssertEdgeRequest,
-    CaptureOut,
-    EdgeOut,
-    EdgeRow,
-    NodeOut,
-    PredicateCreate,
-    UpdateEdgeRequest,
-)
+from inspeg import __version__, queries
+from inspeg.api.capture import capture_router
+from inspeg.api.context import context_router
+from inspeg.api.dispatch import dispatch_router
+from inspeg.api.graph import graph_router
+from inspeg.api.query import query_router
+from inspeg.api.stream import EventBus, stream_router
+from inspeg.context import ContextHub
 from inspeg.store import Store
-from inspeg.store import events as ev
 from inspeg.util import resource_dir
 
 # Starlette compares the Host header with the port stripped.
 _LOOPBACK_HOSTS = ["127.0.0.1", "localhost"]
 
+# Chrome/Edge extension ids are 32 chars of a-p. Anything else — and any
+# wildcard — is refused at startup, not at request time (ADR 0007).
+_EXTENSION_ORIGIN = re.compile(r"^chrome-extension://[a-p]{32}$")
 
-def _unknown_predicate_detail(exc: Exception) -> str:
-    # The "unknown predicate" prefix is a contract with the UI, which offers
-    # the create-and-retry step when it sees it.
-    label = exc.args[0] if exc.args else "?"
-    return (
-        f"unknown predicate {label!r}: predicates are a controlled vocabulary — "
-        "create it first (POST /api/predicates) or pass create_predicate=true"
-    )
+# The only routes an allowlisted extension origin may touch (least privilege;
+# V15). Everything else treats an extension origin like any cross origin.
+_EXTENSION_PATHS = re.compile(
+    r"^/api/(captures/(selection|pointer)"
+    r"|labels"
+    r"|resolve"
+    r"|anchors/url-digests"
+    r"|anchors/[^/]+/labels"
+    r"|artifacts/[^/]+/source"
+    r"|context/tab)$"
+)
+
+_PREFLIGHT_HEADERS = "content-type, x-inspeg-capture, x-inspeg-context"
+
+_CSP = (
+    "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
+    "connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+)
+
+
+def validate_extension_origins(origins: Sequence[str]) -> frozenset[str]:
+    """Startup-time validation: exact ids only, wildcards refused loudly."""
+    validated = set()
+    for origin in origins:
+        origin = origin.strip().rstrip("/")
+        if not _EXTENSION_ORIGIN.fullmatch(origin):
+            raise ValueError(
+                f"invalid extension origin {origin!r}: must be chrome-extension://<32-char id> "
+                "exactly — wildcards and patterns are refused (ADR 0007)"
+            )
+        validated.add(origin)
+    return frozenset(validated)
 
 
 def create_app(
@@ -61,20 +85,62 @@ def create_app(
     *,
     allow_remote: bool = False,
     hotkey_status: Callable[[], str] | None = None,
+    extension_origins: Sequence[str] = (),
+    context_hub: ContextHub | None = None,
+    fts=None,
+    opener=None,
 ) -> FastAPI:
+    ext_origins = validate_extension_origins(extension_origins)
     app = FastAPI(
         title="inspeg",
         version=__version__,
         docs_url="/api/docs",
         openapi_url="/api/openapi.json",
     )
+    bus = EventBus()
+    app.state.event_bus = bus
+    store.on_commit.append(bus.publish_store_events)
+    if context_hub is not None:
+        context_hub.on_change = lambda state: bus.publish_threadsafe(
+            {"type": "context", "state": state}
+        )
+
+    @app.middleware("http")
+    async def security_headers(request: Request, call_next):
+        response: Response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        if not request.url.path.startswith("/api/"):
+            # Served pages only: the UIs must never execute captured or
+            # context-derived strings (V18).
+            response.headers["Content-Security-Policy"] = _CSP
+        return response
 
     @app.middleware("http")
     async def reject_cross_origin(request: Request, call_next):
         origin = request.headers.get("origin")
-        if origin is not None and origin != f"http://{request.headers.get('host', '')}":
+        same_origin = origin is None or origin == f"http://{request.headers.get('host', '')}"
+        from_extension = (
+            origin in ext_origins and _EXTENSION_PATHS.match(request.url.path) is not None
+        )
+        if not same_origin and not from_extension:
             return JSONResponse({"detail": "cross-origin requests are rejected"}, status_code=403)
-        return await call_next(request)
+        if from_extension and request.method == "OPTIONS":
+            # Scoped preflight: echo exactly the one matched origin — never *.
+            return Response(
+                status_code=204,
+                headers={
+                    "Access-Control-Allow-Origin": origin,
+                    "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+                    "Access-Control-Allow-Headers": _PREFLIGHT_HEADERS,
+                    "Access-Control-Max-Age": "600",
+                    "Vary": "Origin",
+                },
+            )
+        response = await call_next(request)
+        if from_extension:
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Vary"] = "Origin"
+        return response
 
     app.add_middleware(
         TrustedHostMiddleware,
@@ -87,186 +153,46 @@ def create_app(
             "ok": True,
             "version": __version__,
             "hotkey": hotkey_status() if hotkey_status is not None else "disabled",
+            "extension_origins": sorted(ext_origins),
+            "context_watch": context_hub is not None,
+            "ignored_exes": sorted(context_hub.ignored_exes) if context_hub is not None else [],
         }
 
     @app.get("/api/stats")
     def stats() -> dict:
         counts = {}
         for table in ("artifact", "anchor", "node", "edge", "event"):
-            row = store.query_one(f"SELECT COUNT(*) AS c FROM {table}")
+            row = store.read_query_one(f"SELECT COUNT(*) AS c FROM {table}")
             counts[table] = row["c"] if row else 0
         return counts
 
-    @app.post("/api/captures/clipboard", response_model=CaptureOut)
-    def capture_clipboard(x_inspeg_capture: str | None = Header(None)) -> CaptureOut:
-        if x_inspeg_capture is None:
-            raise HTTPException(
-                403, "missing X-Inspeg-Capture header (CSRF guard; send 'X-Inspeg-Capture: 1')"
-            )
-        if sys.platform != "win32":
-            raise HTTPException(501, "clipboard capture is only available on Windows")
-        from inspeg.adapters.clipboard import read_clipboard_snapshot
-
+    @app.get("/api/search")
+    def search(q: str, limit: int = 25) -> dict:
+        if fts is None:
+            raise HTTPException(503, "search index is not enabled")
         try:
-            capture = service.ingest_clipboard(store, read_clipboard_snapshot())
-        except service.CaptureTooLargeError as exc:
-            raise HTTPException(413, str(exc)) from exc
-        except service.EmptyCaptureError as exc:
-            raise HTTPException(400, str(exc)) from exc
-        return CaptureOut(
-            anchor_id=capture.anchor_id,
-            artifact_id=capture.artifact_id,
-            sibling_artifact_ids=list(capture.sibling_artifact_ids),
-            provenance=capture.provenance,
-            source_url=capture.source_url,
-            source_app=capture.source_app,
-            captured_at=capture.captured_at,
-            excerpt=capture.excerpt,
-        )
-
-    def anchor_detail(anchor_id: str) -> dict:
-        row = store.query_one(
-            """SELECT a.id, a.artifact_id, a.selector_type, a.selector,
-                      art.mimetype, art.provenance, art.source_uri, art.source_app,
-                      art.captured_at, art.redacted
-               FROM anchor a JOIN artifact art ON art.id = a.artifact_id
-               WHERE a.id = ?""",
-            (anchor_id,),
-        )
-        if row is None:
-            raise HTTPException(404, f"unknown anchor: {anchor_id}")
-        if row["redacted"]:
-            excerpt = None
-        else:
-            try:
-                text = store.blobs.get(row["artifact_id"]).decode("utf-8", "replace")
-            except FileNotFoundError as exc:
-                raise HTTPException(
-                    410, f"blob for artifact {row['artifact_id']} is missing on disk"
-                ) from exc
-            selector = json.loads(row["selector"])
-            piece = text[selector.get("start", 0) : selector.get("end", len(text))]
-            if row["mimetype"] == "text/html":
-                piece = service.html_to_text(piece[: service.EXCERPT_HTML_SLICE])
-            excerpt = piece.strip()[: service.EXCERPT_LIMIT]
-        return {
-            "anchor": {
-                "id": row["id"],
-                "artifact_id": row["artifact_id"],
-                "selector_type": row["selector_type"],
-                "selector": json.loads(row["selector"]),
-            },
-            "artifact": {
-                "id": row["artifact_id"],
-                "mimetype": row["mimetype"],
-                "provenance": row["provenance"],
-                "source_uri": row["source_uri"],
-                # Scheme-validated: the only value the UI may place in an href.
-                "source_link": service.safe_url(row["source_uri"]),
-                "source_app": row["source_app"],
-                "captured_at": row["captured_at"],
-                "redacted": bool(row["redacted"]),
-            },
-            "excerpt": excerpt,
-        }
-
-    @app.get("/api/anchors/latest")
-    def latest_anchor() -> dict:
-        row = store.query_one(
-            "SELECT payload FROM event WHERE kind = ? ORDER BY seq DESC LIMIT 1",
-            (ev.ANCHOR_ADDED,),
-        )
-        if row is None:
-            raise HTTPException(404, "nothing captured yet")
-        return anchor_detail(json.loads(row["payload"])["id"])
-
-    @app.get("/api/anchors/{anchor_id}")
-    def get_anchor(anchor_id: str) -> dict:
-        return anchor_detail(anchor_id)
-
-    @app.post("/api/artifacts/{artifact_id}/redact")
-    def redact_artifact(artifact_id: str) -> dict:
-        try:
-            service.redact_artifact(store, artifact_id)
-        except service.UnknownArtifactError as exc:
-            raise HTTPException(404, f"unknown artifact: {artifact_id}") from exc
-        return {"ok": True, "artifact_id": artifact_id}
-
-    @app.get("/api/nodes", response_model=list[NodeOut])
-    def search_nodes(q: str = "", kind: str | None = None, limit: int = 20) -> list[NodeOut]:
-        limit = max(1, min(limit, 100))
-        escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        rows = store.query(
-            r"""SELECT id, label FROM node
-                WHERE label LIKE ? ESCAPE '\'
-                  AND json_extract(props, '$.kind') IS ?
-                ORDER BY label LIMIT ?""",
-            (f"{escaped}%", kind, limit),
-        )
-        return [NodeOut(id=row["id"], label=row["label"]) for row in rows]
-
-    @app.get("/api/predicates", response_model=list[NodeOut])
-    def get_predicates() -> list[NodeOut]:
-        return [NodeOut(**row) for row in service.list_predicates(store)]
-
-    @app.post("/api/predicates", response_model=NodeOut)
-    def post_predicate(req: PredicateCreate) -> NodeOut:
-        try:
-            return NodeOut(**service.create_predicate(store, req.label))
+            hits = fts.search(q, limit=limit)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
-
-    @app.get("/api/edges", response_model=list[EdgeRow])
-    def get_edges() -> list[EdgeRow]:
-        return [EdgeRow(**row) for row in service.list_edges(store)]
-
-    @app.post("/api/edges", response_model=EdgeOut)
-    def post_edge(req: AssertEdgeRequest) -> EdgeOut:
-        try:
-            result = service.assert_edge(
-                store,
-                anchor_id=req.anchor_id,
-                src_label=req.src_label,
-                edge_type=req.edge_type,
-                dst_label=req.dst_label,
-                note=req.note,
-                create_predicate=req.create_predicate,
+        items = []
+        for hit in hits:
+            row = store.read_query_one(
+                "SELECT rowid, id, kind, mimetype, provenance, captured_at, source_uri,"
+                " source_uri_norm, source_title, source_exe, context_key, locator, redacted"
+                " FROM artifact WHERE id = ? AND redacted = 0",
+                (hit["artifact_id"],),
             )
-        except service.UnknownAnchorError as exc:
-            raise HTTPException(404, f"unknown anchor: {req.anchor_id}") from exc
-        except service.UnknownPredicateError as exc:
-            raise HTTPException(422, _unknown_predicate_detail(exc)) from exc
-        except ValueError as exc:
-            raise HTTPException(422, str(exc)) from exc
-        return EdgeOut(**result)
+            if row is not None:
+                item = queries._items_for_artifacts(store, [row])[0]
+                items.append({"snippet": hit["snippet"], "item": item})
+        return {"items": items}
 
-    @app.put("/api/edges/{edge_id}", response_model=EdgeOut)
-    def put_edge(edge_id: str, req: UpdateEdgeRequest) -> EdgeOut:
-        try:
-            result = service.update_edge(
-                store,
-                edge_id,
-                src_label=req.src_label,
-                edge_type=req.edge_type,
-                dst_label=req.dst_label,
-                note=req.note,
-                create_predicate=req.create_predicate,
-            )
-        except service.UnknownEdgeError as exc:
-            raise HTTPException(404, f"unknown edge: {edge_id}") from exc
-        except service.UnknownPredicateError as exc:
-            raise HTTPException(422, _unknown_predicate_detail(exc)) from exc
-        except ValueError as exc:
-            raise HTTPException(422, str(exc)) from exc
-        return EdgeOut(**result)
-
-    @app.delete("/api/edges/{edge_id}")
-    def delete_edge(edge_id: str) -> dict:
-        try:
-            service.retract_edge(store, edge_id)
-        except service.UnknownEdgeError as exc:
-            raise HTTPException(404, f"unknown edge: {edge_id}") from exc
-        return {"ok": True, "edge_id": edge_id}
+    app.include_router(capture_router(store))
+    app.include_router(graph_router(store))
+    app.include_router(query_router(store))
+    app.include_router(context_router(context_hub))
+    app.include_router(dispatch_router(ext_origins, opener=opener))
+    app.include_router(stream_router(bus))
 
     # Mounted last so /api/* routes win.
     app.mount("/", StaticFiles(directory=resource_dir("ui"), html=True), name="ui")

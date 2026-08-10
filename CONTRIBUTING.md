@@ -28,9 +28,14 @@ must pass on any platform.
 These are architectural constraints, not preferences. PRs that violate them
 will be declined regardless of code quality:
 
-1. **No passive capture.** Every artifact enters the system because the user
-   pressed something. No clipboard listeners, no background OCR, no daemons
-   that watch.
+1. **No passive capture** (three-part rule, [ADR 0004](docs/adr/0004-ephemeral-display-context.md)).
+   Nothing is *persisted* without the user pressing something; nothing
+   observes *content* passively (no clipboard listeners, background OCR,
+   keystroke hooks, or UIA scraping — ever). The one exception is ephemeral
+   display context for the HUD: foreground-window *metadata* and
+   extension-pushed tab/workspace identity, in daemon memory only, never
+   written to disk, never capture-triggering, disableable with
+   `--no-context-watch`.
 2. **The event log is append-only.** Never `UPDATE` or `DELETE` events. The
    projection tables are only written via `Store.record` or rebuilt via
    `replay`.

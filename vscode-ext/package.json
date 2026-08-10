@@ -1,0 +1,57 @@
+{
+  "name": "inspeg-capture",
+  "displayName": "inspeg capture",
+  "description": "One-click capture of code selections and workspace files into your local inspeg knowledge graph, with in-editor highlights for captured ranges.",
+  "version": "0.1.0",
+  "publisher": "inspeg",
+  "license": "Apache-2.0",
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["Other"],
+  "main": "./extension.js",
+  "activationEvents": ["onStartupFinished"],
+  "contributes": {
+    "commands": [
+      { "command": "inspeg.captureAsLastLabel", "title": "Inspeg: Capture as last label" },
+      { "command": "inspeg.captureWithLabel", "title": "Inspeg: Capture as…" },
+      { "command": "inspeg.captureFile", "title": "Inspeg: Capture file" },
+      { "command": "inspeg.open", "title": "Inspeg: Open" }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "inspeg.captureAsLastLabel",
+          "when": "editorHasSelection",
+          "group": "inspeg@1"
+        },
+        {
+          "command": "inspeg.captureWithLabel",
+          "when": "editorHasSelection",
+          "group": "inspeg@2"
+        }
+      ],
+      "explorer/context": [
+        { "command": "inspeg.captureFile", "group": "inspeg@1" }
+      ]
+    },
+    "configuration": {
+      "title": "inspeg",
+      "properties": {
+        "inspeg.daemonUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:8137",
+          "description": "Base URL of the local inspeg daemon (loopback only)."
+        },
+        "inspeg.reportWorkspaceContext": {
+          "type": "boolean",
+          "default": true,
+          "description": "Push the focused workspace/file to the daemon's ephemeral context layer so the HUD can follow along (never stored; ADR 0004)."
+        },
+        "inspeg.decorateCapturedRanges": {
+          "type": "boolean",
+          "default": true,
+          "description": "Highlight previously captured ranges when a file is opened."
+        }
+      }
+    }
+  }
+}

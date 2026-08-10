@@ -25,6 +25,20 @@ def open_db(path: Path) -> sqlite3.Connection:
     return conn
 
 
+def open_db_readonly(path: Path) -> sqlite3.Connection:
+    """A second, read-only connection for GET handlers.
+
+    WAL gives readers snapshot isolation, so HUD/extension reads never contend
+    with the capture worker on the Store's write lock. ``mode=ro`` makes the
+    read-only claim structural: this connection *cannot* write, so the daemon
+    stays a single-writer system by construction.
+    """
+    conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 2000")
+    return conn
+
+
 def apply_migrations(conn: sqlite3.Connection, schema_dir: Path | None = None) -> list[str]:
     schema_dir = schema_dir or resource_dir("schema")
     conn.execute(
